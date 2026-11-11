@@ -4,7 +4,8 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use url::Url;
 
-use super::{Auth, SubsonicError};
+use super::models::{ArtistIndexes, SongList};
+use super::{AlbumWithSongs, Artist, ArtistWithAlbums, Auth, SearchResults, Song, SubsonicError};
 
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "senritsu";
@@ -93,7 +94,11 @@ impl SubsonicClient {
             .send()
             .await?
             .error_for_status()?;
-        let mut body: Value = resp.json().await?;
+        let body: Value = resp.json().await?;
+        Self::unwrap_envelope(body)
+    }
+
+    fn unwrap_envelope(mut body: Value) -> Result<Value, SubsonicError> {
         let mut inner = body
             .get_mut("subsonic-response")
             .map(Value::take)
@@ -115,7 +120,6 @@ impl SubsonicClient {
         Ok(inner.take())
     }
 
-    #[allow(dead_code)] // first consumer arrives in the library task
     /// GET `/rest/<endpoint>` and deserialize the field `key` of the response envelope.
     pub(crate) async fn call<T: DeserializeOwned>(
         &self,
@@ -138,6 +142,100 @@ impl SubsonicClient {
         params: &[(&str, String)],
     ) -> Result<(), SubsonicError> {
         self.envelope(endpoint, params).await.map(|_| ())
+    }
+
+    pub async fn get_artists(&self) -> Result<Vec<Artist>, SubsonicError> {
+        let idx: ArtistIndexes = self.call("getArtists", &[], "artists").await?;
+        Ok(idx.index.into_iter().flat_map(|i| i.artist).collect())
+    }
+
+    pub async fn get_artist(&self, id: &str) -> Result<ArtistWithAlbums, SubsonicError> {
+        self.call("getArtist", &[("id", id.to_string())], "artist")
+            .await
+    }
+
+    pub async fn get_album(&self, id: &str) -> Result<AlbumWithSongs, SubsonicError> {
+        self.call("getAlbum", &[("id", id.to_string())], "album")
+            .await
+    }
+
+    pub async fn get_random_songs(&self, size: u32) -> Result<Vec<Song>, SubsonicError> {
+        let list: SongList = self
+            .call(
+                "getRandomSongs",
+                &[("size", size.to_string())],
+                "randomSongs",
+            )
+            .await?;
+        Ok(list.song)
+    }
+
+    pub async fn search(&self, query: &str, limit: u32) -> Result<SearchResults, SubsonicError> {
+        let n = limit.to_string();
+        self.call(
+            "search3",
+            &[
+                ("query", query.to_string()),
+                ("artistCount", n.clone()),
+                ("albumCount", n.clone()),
+                ("songCount", n),
+            ],
+            "searchResult3",
+        )
+        .await
+    }
+
+    pub async fn get_starred_songs(&self) -> Result<Vec<Song>, SubsonicError> {
+        let list: SongList = self.call("getStarred2", &[], "starred2").await?;
+        Ok(list.song)
+    }
+
+    pub async fn star(&self, song_id: &str) -> Result<(), SubsonicError> {
+        self.call_unit("star", &[("id", song_id.to_string())]).await
+    }
+
+    pub async fn unstar(&self, song_id: &str) -> Result<(), SubsonicError> {
+        self.call_unit("unstar", &[("id", song_id.to_string())])
+            .await
+    }
+
+    pub async fn scrobble(
+        &self,
+        song_id: &str,
+        time_ms: i64,
+        submission: bool,
+    ) -> Result<(), SubsonicError> {
+        self.call_unit(
+            "scrobble",
+            &[
+                ("id", song_id.to_string()),
+                ("time", time_ms.to_string()),
+                ("submission", submission.to_string()),
+            ],
+        )
+        .await
+    }
+
+    /// Fetches raw image bytes. A JSON body means the server returned an error envelope.
+    pub async fn cover_art(&self, cover_id: &str, size: u32) -> Result<Vec<u8>, SubsonicError> {
+        let resp = self
+            .http
+            .get(format!("{}/rest/getCoverArt", self.base))
+            .query(&self.query(&[("id", cover_id.to_string()), ("size", size.to_string())]))
+            .send()
+            .await?
+            .error_for_status()?;
+        let is_json = resp
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.contains("json"));
+        if is_json {
+            let body: Value = resp.json().await?;
+            Self::unwrap_envelope(body)?;
+            return Err(SubsonicError::Parse("expected image data".into()));
+        }
+        Ok(resp.bytes().await?.to_vec())
     }
 }
 
@@ -270,5 +368,205 @@ mod tests {
         ] {
             assert!(u.contains(needle), "{u} missing {needle}");
         }
+    }
+
+    fn fixture(body: &str) -> ResponseTemplate {
+        ResponseTemplate::new(200).set_body_raw(body.to_string(), "application/json")
+    }
+
+    async fn client_for(server: &MockServer) -> SubsonicClient {
+        SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap()
+    }
+
+    #[tokio::test]
+    async fn get_artists_flattens_indexes() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getArtists"))
+            .respond_with(fixture(include_str!(
+                "../../tests/fixtures/get_artists.json"
+            )))
+            .mount(&server)
+            .await;
+        let artists = client_for(&server).await.get_artists().await.unwrap();
+        let names: Vec<_> = artists.iter().map(|a| a.name.as_str()).collect();
+        assert_eq!(names, ["Aimer", "Ado", "YOASOBI"]);
+        assert_eq!(artists[0].album_count, 4);
+        assert_eq!(artists[1].cover_art, None);
+    }
+
+    #[tokio::test]
+    async fn get_artist_parses_albums() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getArtist"))
+            .and(query_param("id", "ar-1"))
+            .respond_with(fixture(include_str!(
+                "../../tests/fixtures/get_artist.json"
+            )))
+            .mount(&server)
+            .await;
+        let a = client_for(&server).await.get_artist("ar-1").await.unwrap();
+        assert_eq!(a.artist.name, "Aimer");
+        assert_eq!(a.albums.len(), 2);
+        assert_eq!(a.albums[1].year, Some(2020));
+    }
+
+    #[tokio::test]
+    async fn get_album_parses_songs_and_starred() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getAlbum"))
+            .and(query_param("id", "al-1"))
+            .respond_with(fixture(include_str!("../../tests/fixtures/get_album.json")))
+            .mount(&server)
+            .await;
+        let a = client_for(&server).await.get_album("al-1").await.unwrap();
+        assert_eq!(a.songs.len(), 2);
+        assert!(!a.songs[0].starred);
+        assert!(a.songs[1].starred);
+        assert_eq!(a.songs[0].bit_rate, Some(900));
+        assert_eq!(a.songs[0].suffix.as_deref(), Some("flac"));
+        assert_eq!(
+            a.album.music_brainz_id.as_deref(),
+            Some("1b2c3d4e-0000-4000-8000-123456789abc")
+        );
+    }
+
+    #[tokio::test]
+    async fn album_with_missing_fields_parses() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getAlbum"))
+            .respond_with(fixture(include_str!(
+                "../../tests/fixtures/get_album_sparse.json"
+            )))
+            .mount(&server)
+            .await;
+        let a = client_for(&server).await.get_album("al-9").await.unwrap();
+        let s = &a.songs[0];
+        assert_eq!(s.title, "旋律");
+        assert_eq!(s.duration, 0);
+        assert_eq!(s.cover_art, None);
+        assert_eq!(s.year, None);
+        assert_eq!(s.album, "");
+        assert!(!s.starred);
+        assert_eq!(a.album.artist, "");
+    }
+
+    #[tokio::test]
+    async fn random_songs_sends_size() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getRandomSongs"))
+            .and(query_param("size", "200"))
+            .respond_with(fixture(include_str!(
+                "../../tests/fixtures/get_random_songs.json"
+            )))
+            .mount(&server)
+            .await;
+        let songs = client_for(&server)
+            .await
+            .get_random_songs(200)
+            .await
+            .unwrap();
+        assert_eq!(songs.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_returns_grouped_results() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/search3"))
+            .and(query_param("query", "aimer"))
+            .and(query_param("artistCount", "20"))
+            .and(query_param("albumCount", "20"))
+            .and(query_param("songCount", "20"))
+            .respond_with(fixture(include_str!("../../tests/fixtures/search3.json")))
+            .mount(&server)
+            .await;
+        let r = client_for(&server).await.search("aimer", 20).await.unwrap();
+        assert_eq!((r.artists.len(), r.albums.len(), r.songs.len()), (1, 2, 3));
+    }
+
+    #[tokio::test]
+    async fn starred_songs_come_from_getstarred2() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getStarred2"))
+            .respond_with(fixture(include_str!(
+                "../../tests/fixtures/get_starred2.json"
+            )))
+            .mount(&server)
+            .await;
+        let songs = client_for(&server).await.get_starred_songs().await.unwrap();
+        assert_eq!(songs.len(), 2);
+        assert!(songs.iter().all(|s| s.starred));
+    }
+
+    #[tokio::test]
+    async fn star_and_unstar_send_id() {
+        let server = MockServer::start().await;
+        for ep in ["star", "unstar"] {
+            Mock::given(path(format!("/rest/{ep}")))
+                .and(query_param("id", "so-1"))
+                .respond_with(ok())
+                .expect(1)
+                .mount(&server)
+                .await;
+        }
+        let c = client_for(&server).await;
+        c.star("so-1").await.unwrap();
+        c.unstar("so-1").await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn scrobble_sends_submission_and_time() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/scrobble"))
+            .and(query_param("id", "so-1"))
+            .and(query_param("submission", "true"))
+            .and(query_param("time", "1700000000000"))
+            .respond_with(ok())
+            .expect(1)
+            .mount(&server)
+            .await;
+        client_for(&server)
+            .await
+            .scrobble("so-1", 1_700_000_000_000, true)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn cover_art_returns_bytes() {
+        let server = MockServer::start().await;
+        let bytes: Vec<u8> = vec![0xff, 0xd8, 0xff, 0xe0, 0, 1, 2, 3];
+        Mock::given(path("/rest/getCoverArt"))
+            .and(query_param("id", "al-1"))
+            .and(query_param("size", "300"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(bytes.clone(), "image/jpeg"))
+            .mount(&server)
+            .await;
+        let got = client_for(&server)
+            .await
+            .cover_art("al-1", 300)
+            .await
+            .unwrap();
+        assert_eq!(got, bytes);
+    }
+
+    #[tokio::test]
+    async fn cover_art_json_body_is_api_error() {
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/getCoverArt"))
+            .respond_with(ResponseTemplate::new(200).set_body_raw(
+                r#"{"subsonic-response":{"status":"failed","error":{"code":70,"message":"not found"}}}"#,
+                "application/json",
+            ))
+            .mount(&server)
+            .await;
+        let err = client_for(&server)
+            .await
+            .cover_art("x", 300)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, SubsonicError::Api { code: 70, .. }),
+            "{err:?}"
+        );
     }
 }

@@ -1,0 +1,3 @@
+{"subsonic-response":{"status":"ok","version":"1.16.1","artist":{"id":"ar-1","name":"Aimer","albumCount":2,"coverArt":"ar-ar-1","album":[
+{"id":"al-1","name":"Penny Rain","artist":"Aimer","artistId":"ar-1","year":2019,"songCount":12,"duration":2800,"coverArt":"al-al-1"},
+{"id":"al-2","name":"Sun Dance","artist":"Aimer","artistId":"ar-1","year":2020,"songCount":10,"duration":2400,"coverArt":"al-al-2"}]}}}

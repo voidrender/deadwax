@@ -1,0 +1,4 @@
+{"subsonic-response":{"status":"ok","version":"1.16.1","searchResult3":{
+"artist":[{"id":"ar-1","name":"Aimer","albumCount":4}],
+"album":[{"id":"al-1","name":"Penny Rain","artist":"Aimer","songCount":12,"duration":2800},{"id":"al-2","name":"Sun Dance","artist":"Aimer","songCount":10,"duration":2400}],
+"song":[{"id":"so-1","title":"Kataomoi","artist":"Aimer","album":"Penny Rain","duration":250},{"id":"so-2","title":"Brave Shine","artist":"Aimer","album":"Penny Rain","duration":250},{"id":"so-3","title":"Ref:rain","artist":"Aimer","album":"Sun Dance","duration":300}]}}}
