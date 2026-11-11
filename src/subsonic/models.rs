@@ -1,4 +1,4 @@
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -27,7 +27,7 @@ pub struct Album {
     pub music_brainz_id: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Song {
     pub id: String,
@@ -45,13 +45,24 @@ pub struct Song {
     pub cover_art: Option<String>,
     pub suffix: Option<String>,
     pub bit_rate: Option<u32>,
-    /// The server sends a timestamp when starred and omits the field otherwise.
+    /// The server sends a timestamp when starred and omits the field
+    /// otherwise. Saved queue state stores a plain bool.
     #[serde(default, deserialize_with = "present_as_true")]
     pub starred: bool,
 }
 
 fn present_as_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {
-    Ok(Option::<String>::deserialize(d)?.is_some())
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum Starred {
+        Flag(bool),
+        Stamp(serde::de::IgnoredAny),
+    }
+    Ok(match Option::<Starred>::deserialize(d)? {
+        Some(Starred::Flag(b)) => b,
+        Some(Starred::Stamp(_)) => true,
+        None => false,
+    })
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
