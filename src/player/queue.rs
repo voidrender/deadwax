@@ -216,7 +216,12 @@ impl Queue {
             self.pos = Some(pos + 1);
         } else if self.repeat == RepeatMode::All {
             if self.shuffle {
+                // Keep the item peek_next reported first, and never replay the finished one.
+                let first = self.order[0];
                 self.order.shuffle(&mut self.rng);
+                if let Some(at) = self.order.iter().position(|&i| i == first) {
+                    self.order.swap(0, at);
+                }
             }
             self.pos = Some(0);
         } else {
@@ -406,6 +411,24 @@ mod tests {
         b.sort();
         assert_eq!(a, b);
         assert_eq!(q.current_display_index(), Some(0));
+    }
+
+    #[test]
+    fn shuffled_wrap_matches_peek_and_avoids_repeat() {
+        for seed in 0..20 {
+            let mut q = Queue::with_seed(seed);
+            q.replace(songs(10), 0);
+            q.set_shuffle(true);
+            q.repeat = RepeatMode::All;
+            for _ in 0..9 {
+                q.advance();
+            }
+            let finished = q.current().unwrap().uid;
+            let peeked = q.peek_next().unwrap().uid;
+            let landed = q.advance().unwrap().uid;
+            assert_eq!(peeked, landed, "seed {seed}");
+            assert_ne!(landed, finished, "seed {seed}");
+        }
     }
 
     #[test]
