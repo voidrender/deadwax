@@ -8,9 +8,9 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
-use tokio::net::unix::{OwnedReadHalf, OwnedWriteHalf};
+use tokio::net::unix::OwnedWriteHalf;
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
@@ -296,27 +296,48 @@ impl Drop for Conn {
     }
 }
 
-/// Waits for the process to exit or for a kill request. On an unexpected exit
-/// it lets the reader forward everything the process sent, then reports
-/// `Crashed`, so `Crashed` is always the last event from that process.
+enum WatchEnd {
+    Exited,
+    KillRequested,
+    ReaderDied,
+}
+
+/// Waits for the process to exit, a kill request, or the reader to stop.
+/// On an unexpected exit it lets the reader forward everything the process
+/// sent, then reports `Crashed`, so `Crashed` is always the last event from
+/// that process. A reader that stops while mpv lives would leave every
+/// command hanging, so that kills mpv and counts as a crash too.
 async fn watch(
     mut child: Child,
-    kill_rx: oneshot::Receiver<()>,
-    reader: JoinHandle<()>,
+    mut kill_rx: oneshot::Receiver<()>,
+    mut reader: JoinHandle<()>,
     events: mpsc::UnboundedSender<BackendEvent>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let kill_requested = tokio::select! {
-        _ = child.wait() => false,
-        _ = kill_rx => true,
+    let end = tokio::select! {
+        _ = child.wait() => WatchEnd::Exited,
+        _ = &mut kill_rx => WatchEnd::KillRequested,
+        _ = &mut reader => WatchEnd::ReaderDied,
     };
-    if kill_requested {
-        shutdown.store(true, Ordering::SeqCst);
-        let _ = child.kill().await;
+    match end {
+        WatchEnd::KillRequested => {
+            shutdown.store(true, Ordering::SeqCst);
+            let _ = child.kill().await;
+        }
+        WatchEnd::ReaderDied => {
+            if !shutdown.load(Ordering::SeqCst) {
+                tracing::warn!("mpv IPC reader stopped, killing mpv");
+            }
+            let _ = child.kill().await;
+        }
+        WatchEnd::Exited => {}
     }
-    let abort = reader.abort_handle();
-    if tokio::time::timeout(DRAIN_TIMEOUT, reader).await.is_err() {
-        abort.abort();
+    if !matches!(end, WatchEnd::ReaderDied)
+        && tokio::time::timeout(DRAIN_TIMEOUT, &mut reader)
+            .await
+            .is_err()
+    {
+        reader.abort();
     }
     if !shutdown.load(Ordering::SeqCst) {
         tracing::warn!("mpv exited unexpectedly");
@@ -324,18 +345,39 @@ async fn watch(
     }
 }
 
+/// Parses one IPC line. mpv doesn't promise UTF-8 (file names and tags can
+/// hold raw bytes), so invalid sequences are replaced rather than dropping
+/// the whole message. Returns None for anything that isn't JSON.
+fn parse_line(bytes: &[u8]) -> Option<Value> {
+    serde_json::from_slice(bytes)
+        .ok()
+        .or_else(|| serde_json::from_str(&String::from_utf8_lossy(bytes)).ok())
+        .filter(Value::is_object)
+}
+
 /// Reads JSON lines: replies go to their waiting command, events to the
 /// channel. Lines are never logged because they can contain stream URLs.
-async fn read_loop(
-    reader: OwnedReadHalf,
+async fn read_loop<R: AsyncRead + Unpin>(
+    reader: R,
     pending: Pending,
     events: mpsc::UnboundedSender<BackendEvent>,
     shutdown: Arc<AtomicBool>,
 ) {
-    let mut lines = BufReader::new(reader).lines();
+    let mut reader = BufReader::new(reader);
+    let mut line = Vec::new();
     let mut idle: Option<bool> = None;
-    while let Ok(Some(line)) = lines.next_line().await {
-        let Ok(msg) = serde_json::from_str::<Value>(&line) else {
+    loop {
+        line.clear();
+        match reader.read_until(b'\n', &mut line).await {
+            Ok(0) => break,
+            Ok(_) => {}
+            Err(e) => {
+                tracing::debug!(kind = ?e.kind(), "mpv IPC read failed");
+                break;
+            }
+        }
+        let Some(msg) = parse_line(&line) else {
+            tracing::debug!(len = line.len(), "skipping unparseable mpv IPC line");
             continue;
         };
         if msg.get("event").is_some() {
@@ -400,5 +442,82 @@ fn parse_event(msg: &Value, idle: &mut Option<bool>) -> Option<BackendEvent> {
             }
         }
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+
+    #[test]
+    fn parse_line_skips_garbage_and_keeps_lossy_utf8() {
+        assert_eq!(parse_line(b"\xff\xfe\n"), None);
+        assert_eq!(parse_line(b"not json\n"), None);
+        assert_eq!(parse_line(b"\n"), None);
+        let ok = parse_line(b"{\"event\":\"start-file\",\"playlist_entry_id\":3}\n").unwrap();
+        assert_eq!(ok["playlist_entry_id"], 3);
+        // A reply whose string data holds invalid UTF-8 must still resolve.
+        let lossy = parse_line(
+            b"{\"data\":[{\"filename\":\"caf\xe9.flac\",\"id\":7}],\"request_id\":9,\"error\":\"success\"}\n",
+        )
+        .unwrap();
+        assert_eq!(lossy["request_id"], 9);
+        assert_eq!(lossy["data"][0]["id"], 7);
+    }
+
+    #[tokio::test]
+    async fn reader_survives_bad_lines() {
+        let (mut tx_side, rx_side) = tokio::io::duplex(1024);
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let reader = tokio::spawn(read_loop(
+            rx_side,
+            Pending::default(),
+            events,
+            Arc::new(AtomicBool::new(false)),
+        ));
+        tx_side
+            .write_all(
+                b"\xff\xfe\xfd\nnot json\n{\"event\":\"start-file\",\"playlist_entry_id\":4}\n",
+            )
+            .await
+            .unwrap();
+        let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap();
+        assert_eq!(ev, Some(BackendEvent::FileStarted(4)));
+        assert!(!reader.is_finished());
+    }
+
+    #[tokio::test]
+    async fn reader_death_kills_child_and_reports_crash() {
+        let child = Command::new("sleep")
+            .arg("30")
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let pid = child.id().unwrap();
+        let (_kill, kill_rx) = oneshot::channel();
+        let reader = tokio::spawn(async {});
+        let (events, mut rx) = mpsc::unbounded_channel();
+        let watcher = tokio::spawn(watch(
+            child,
+            kill_rx,
+            reader,
+            events,
+            Arc::new(AtomicBool::new(false)),
+        ));
+        let ev = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .unwrap();
+        assert_eq!(ev, Some(BackendEvent::Crashed));
+        watcher.await.unwrap();
+        let alive = std::process::Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success();
+        assert!(!alive, "child should be killed");
     }
 }
