@@ -295,3 +295,29 @@ async fn stop_ends_playback_without_crash() {
     assert!(ok, "never saw a stop end: {seen:?}");
     assert!(!seen.contains(&BackendEvent::Crashed));
 }
+
+#[tokio::test]
+async fn socket_lives_in_private_dir() {
+    use std::os::unix::fs::PermissionsExt;
+    if skip() {
+        return;
+    }
+    let (mut mpv, _rx) = MpvBackend::spawn(0).await.unwrap();
+    for _ in 0..2 {
+        let socket = mpv.socket_path().expect("socket path").to_path_buf();
+        let dir = socket.parent().unwrap().to_path_buf();
+        let mode = std::fs::metadata(&dir).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode,
+            0o700,
+            "socket dir {} has mode {mode:o}",
+            dir.display()
+        );
+        assert_ne!(dir, std::env::temp_dir());
+        mpv.restart().await.unwrap();
+        assert!(!dir.exists(), "old socket dir should be removed");
+    }
+    let dir = mpv.socket_path().unwrap().parent().unwrap().to_path_buf();
+    drop(mpv);
+    assert!(!dir.exists(), "socket dir should be removed on drop");
+}

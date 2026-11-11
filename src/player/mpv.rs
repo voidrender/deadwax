@@ -2,9 +2,10 @@ use super::backend::{AudioBackend, BackendEvent, EndReason, EntryId, LoadMode};
 use anyhow::{Context, anyhow, bail};
 use serde_json::{Value, json};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::os::unix::fs::PermissionsExt;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
@@ -24,8 +25,6 @@ const OBSERVED: [&str; 4] = ["time-pos", "pause", "duration", "idle-active"];
 type Reply = Result<Value, String>;
 type Pending = Arc<Mutex<HashMap<u64, oneshot::Sender<Reply>>>>;
 
-static SPAWNS: AtomicU64 = AtomicU64::new(0);
-
 /// Returns true when `mpv --version` runs successfully.
 pub fn mpv_available() -> bool {
     std::process::Command::new("mpv")
@@ -36,18 +35,20 @@ pub fn mpv_available() -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// The first spawn in a process uses `senritsu-mpv-<pid>.sock`. Later spawns
-/// (restarts, or several backends in one test binary) add a counter so a
-/// dying process can never collide with its replacement.
-fn socket_path() -> PathBuf {
-    let n = SPAWNS.fetch_add(1, Ordering::Relaxed);
-    let pid = std::process::id();
-    let name = if n == 0 {
-        format!("senritsu-mpv-{pid}.sock")
-    } else {
-        format!("senritsu-mpv-{pid}-{n}.sock")
-    };
-    std::env::temp_dir().join(name)
+/// Creates a fresh directory only this user can enter, for one mpv socket.
+/// A predictable path in a shared temp dir could be taken over by another
+/// user, who would then receive our auth-bearing stream URLs.
+fn private_socket_dir() -> anyhow::Result<tempfile::TempDir> {
+    let dir = tempfile::Builder::new()
+        .prefix("senritsu-mpv-")
+        .tempdir()
+        .context("couldn't create the mpv socket directory")?;
+    std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;
+    let mode = std::fs::metadata(dir.path())?.permissions().mode() & 0o777;
+    if mode != 0o700 {
+        bail!("mpv socket directory has mode {mode:o}, expected 700");
+    }
+    Ok(dir)
 }
 
 /// mpv driven over its JSON IPC socket.
@@ -68,6 +69,8 @@ struct Conn {
     watcher: Option<JoinHandle<()>>,
     pid: Option<u32>,
     socket: PathBuf,
+    /// Removed (with the socket) when the connection is dropped.
+    _socket_dir: tempfile::TempDir,
 }
 
 impl MpvBackend {
@@ -87,6 +90,10 @@ impl MpvBackend {
 
     pub fn pid(&self) -> Option<u32> {
         self.conn.as_ref().and_then(|c| c.pid)
+    }
+
+    pub fn socket_path(&self) -> Option<&Path> {
+        self.conn.as_ref().map(|c| c.socket.as_path())
     }
 
     async fn start(&mut self) -> anyhow::Result<()> {
@@ -202,8 +209,8 @@ impl Conn {
         volume: u8,
         events: mpsc::UnboundedSender<BackendEvent>,
     ) -> anyhow::Result<Conn> {
-        let socket = socket_path();
-        let _ = std::fs::remove_file(&socket);
+        let socket_dir = private_socket_dir()?;
+        let socket = socket_dir.path().join("mpv.sock");
         let mut child = Command::new("mpv")
             .args([
                 "--idle=yes",
@@ -236,6 +243,11 @@ impl Conn {
                 Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
             }
         };
+        if let (Some(ours), Ok(Some(peer))) = (pid, stream.peer_cred().map(|c| c.pid()))
+            && peer != ours as i32
+        {
+            bail!("mpv IPC socket is owned by another process");
+        }
         tracing::debug!(pid, "mpv started");
 
         let (reader, writer) = stream.into_split();
@@ -258,6 +270,7 @@ impl Conn {
             watcher: Some(watcher),
             pid,
             socket,
+            _socket_dir: socket_dir,
         })
     }
 
@@ -280,7 +293,6 @@ impl Drop for Conn {
         // runtime is gone, `kill_on_drop` covers it.
         self.shutdown.store(true, Ordering::SeqCst);
         self.kill.take();
-        let _ = std::fs::remove_file(&self.socket);
     }
 }
 
