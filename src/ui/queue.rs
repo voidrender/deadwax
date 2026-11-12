@@ -37,14 +37,15 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
             let left = format!("{}  {}", item.song.title, item.song.artist);
             let right = format_duration(f64::from(item.song.duration));
             let text = fit(&left, &right, width.saturating_sub(MARK));
-            if i == sel {
-                Line::styled(format!("{mark}{text}"), theme::selected())
+            let (mark_style, text_style) = if i == sel {
+                (theme::selected(), theme::selected())
             } else {
-                Line::from(vec![
-                    Span::styled(mark, theme::accent_bold()),
-                    Span::raw(text),
-                ])
-            }
+                (theme::accent_bold(), ratatui::style::Style::new())
+            };
+            Line::from(vec![
+                Span::styled(mark, mark_style),
+                Span::styled(text, text_style),
+            ])
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);

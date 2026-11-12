@@ -12,12 +12,19 @@ pub struct QueueViewState {
     /// The uid of the selected item, so the selection stays on it when the
     /// queue changes around it.
     anchor: Option<u64>,
+    /// The uids seen at the last sync. Position ticks reuse the same items,
+    /// so only a changed list may move the selection.
+    seen: Vec<u64>,
 }
 
 impl QueueViewState {
     /// Re-aims the selection after a new snapshot. It stays on the same item
     /// when that item is still queued, and is clamped otherwise.
     pub fn sync(&mut self, items: &[QueueItem]) {
+        if self.seen.iter().copied().eq(items.iter().map(|i| i.uid)) {
+            return;
+        }
+        self.seen = items.iter().map(|i| i.uid).collect();
         let found = self
             .anchor
             .and_then(|uid| items.iter().position(|i| i.uid == uid));
@@ -178,6 +185,19 @@ mod tests {
     }
 
     #[test]
+    fn stale_snapshot_between_moves_does_not_reset_selection() {
+        let mut app = app_with(&[1, 2, 3]);
+        press(&mut app, 'J');
+        let mut tick = snap(&[1, 2, 3]);
+        tick.position = 5.0;
+        app.handle_event(AppEvent::Snapshot(tick));
+        assert_eq!(
+            press(&mut app, 'J'),
+            [Effect::Player(PlayerCommand::Move { from: 1, to: 2 })]
+        );
+    }
+
+    #[test]
     fn move_at_the_ends_is_a_no_op() {
         let mut app = app_with(&[1, 2]);
         assert!(press(&mut app, 'K').is_empty());
@@ -259,6 +279,31 @@ mod tests {
         app.help = true;
         assert!(press(&mut app, 'd').is_empty());
         assert!(!app.help);
+    }
+
+    #[test]
+    fn f_toggles_the_queue_row_both_ways() {
+        let mut app = app_with(&[1, 2]);
+        assert_eq!(
+            press(&mut app, 'f'),
+            [Effect::ToggleStar {
+                song_id: "1".into(),
+                starred: true
+            }]
+        );
+        app.handle_event(AppEvent::Api(crate::app::ApiResult::Starred {
+            song_id: "1".into(),
+            starred: true,
+            result: Ok(()),
+        }));
+        assert!(app.player.items[0].song.starred);
+        assert_eq!(
+            press(&mut app, 'f'),
+            [Effect::ToggleStar {
+                song_id: "1".into(),
+                starred: false
+            }]
+        );
     }
 
     #[test]
