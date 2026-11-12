@@ -1,6 +1,7 @@
-//! Album art: picking an image protocol and drawing the current cover.
+//! Album art: picking an image protocol and drawing covers.
 //!
-//! One decoded cover is kept per track. The strip and Now Playing each get
+//! One decoded cover is kept for the current track, and one for the info
+//! popup. The strip and Now Playing each get
 //! their own `StatefulProtocol`, because ratatui-image encodes a protocol for
 //! one area size at a time. Resizing and encoding run on a blocking thread
 //! when a resizer is attached (the runtime attaches one). Without it, as in
@@ -157,6 +158,8 @@ fn guessed_font_picker() -> Picker {
 pub enum Slot {
     Strip,
     Large,
+    /// The info popup's cover, which may belong to any song or album.
+    Info,
 }
 
 /// A resize and encode to run off the UI thread.
@@ -217,15 +220,28 @@ struct SlotState {
     failed: Option<Size>,
 }
 
-/// The cover for the current track and its per-area protocols.
+impl SlotState {
+    fn has_image(&self) -> bool {
+        self.protocol.is_some() || self.pending
+    }
+}
+
+/// The covers for the current track and the info popup, and their
+/// per-area protocols.
 pub struct ArtState {
     pub picker: Picker,
     /// The cover the current track wants, whether or not it has arrived.
     pub cover_id: Option<String>,
+    /// The current track's decoded cover, so the info popup can reuse it.
+    image: Option<DynamicImage>,
     strip: SlotState,
     large: SlotState,
     /// Bumped whenever the image changes, so stale resizes are dropped.
     generation: u64,
+    /// The cover the info popup wants.
+    pub info_cover_id: Option<String>,
+    info: SlotState,
+    info_generation: u64,
     resizer: Option<UnboundedSender<ResizeJob>>,
     /// An overlay is open: draw placeholders instead of images, so no image
     /// escape (such as kitty's one-time upload) lands in a covered cell.
@@ -247,6 +263,7 @@ impl std::fmt::Debug for ArtState {
             .field("protocol", &protocol_name(self.picker.protocol_type()))
             .field("cover_id", &self.cover_id)
             .field("has_image", &self.has_image())
+            .field("info_cover_id", &self.info_cover_id)
             .field("generation", &self.generation)
             .finish_non_exhaustive()
     }
@@ -257,9 +274,13 @@ impl ArtState {
         Self {
             picker,
             cover_id: None,
+            image: None,
             strip: SlotState::default(),
             large: SlotState::default(),
             generation: 0,
+            info_cover_id: None,
+            info: SlotState::default(),
+            info_generation: 0,
             resizer: None,
             suppressed: false,
             drawn: Vec::new(),
@@ -273,6 +294,7 @@ impl ArtState {
     pub fn set_picker(&mut self, picker: Picker) {
         self.picker = picker;
         self.drop_image();
+        self.drop_info();
     }
 
     /// Sends resizes to a worker instead of running them on the UI thread.
@@ -291,9 +313,41 @@ impl ArtState {
         true
     }
 
+    /// Records the cover the info popup wants. Returns true when it has to
+    /// be loaded. The current track's cover is reused when it is the same.
+    pub fn expect_info(&mut self, cover_id: String) -> bool {
+        if self.info_cover_id.as_deref() == Some(cover_id.as_str()) {
+            return false;
+        }
+        self.drop_info();
+        let reuse = (self.cover_id.as_deref() == Some(cover_id.as_str()))
+            .then(|| self.image.clone())
+            .flatten();
+        self.info_cover_id = Some(cover_id);
+        match reuse {
+            Some(img) => {
+                self.info.protocol = Some(self.picker.new_resize_protocol(img));
+                false
+            }
+            None => true,
+        }
+    }
+
+    /// The info popup closed, or shows something without a cover.
+    pub fn clear_info(&mut self) {
+        if self.info_cover_id.is_some() || self.info.protocol.is_some() {
+            self.info_cover_id = None;
+            self.drop_info();
+        }
+    }
+
     /// A load of `cover_id` failed. When it is still the wanted cover, forget
-    /// it so a later `expect` asks for it again. Returns whether it was.
+    /// it so a later `expect` asks for it again. Returns whether the current
+    /// track wanted it.
     pub fn forget(&mut self, cover_id: &str) -> bool {
+        if self.info_cover_id.as_deref() == Some(cover_id) {
+            self.info_cover_id = None;
+        }
         if self.cover_id.as_deref() != Some(cover_id) {
             return false;
         }
@@ -309,40 +363,64 @@ impl ArtState {
         }
     }
 
-    /// Installs a decoded cover. It is ignored unless `cover_id` is the one
-    /// the current track wants, so a late load never shows the wrong art.
+    /// Installs a decoded cover wherever it is wanted: the current track,
+    /// the info popup, or both. It is ignored elsewhere, so a late load
+    /// never shows the wrong art, and a second load of a cover that is
+    /// already shown changes nothing.
     pub fn set_image(&mut self, cover_id: &str, img: DynamicImage) {
-        if self.cover_id.as_deref() != Some(cover_id) {
+        if self.info_cover_id.as_deref() == Some(cover_id) && !self.info.has_image() {
+            self.info.protocol = Some(self.picker.new_resize_protocol(img.clone()));
+        }
+        if self.cover_id.as_deref() != Some(cover_id) || self.has_image() {
             return;
         }
         self.drop_image();
         self.strip.protocol = Some(self.picker.new_resize_protocol(img.clone()));
-        self.large.protocol = Some(self.picker.new_resize_protocol(img));
+        self.large.protocol = Some(self.picker.new_resize_protocol(img.clone()));
+        self.image = Some(img);
     }
 
+    /// Whether the current track's cover has arrived.
     pub fn has_image(&self) -> bool {
-        [&self.strip, &self.large]
-            .iter()
-            .any(|s| s.protocol.is_some() || s.pending)
+        self.strip.has_image() || self.large.has_image()
+    }
+
+    /// Whether the info popup's cover has arrived.
+    pub fn has_info_image(&self) -> bool {
+        self.info.has_image()
     }
 
     fn drop_image(&mut self) {
         self.strip = SlotState::default();
         self.large = SlotState::default();
+        self.image = None;
         self.generation = self.generation.wrapping_add(1);
+    }
+
+    fn drop_info(&mut self) {
+        self.info = SlotState::default();
+        self.info_generation = self.info_generation.wrapping_add(1);
     }
 
     fn slot_mut(&mut self, slot: Slot) -> &mut SlotState {
         match slot {
             Slot::Strip => &mut self.strip,
             Slot::Large => &mut self.large,
+            Slot::Info => &mut self.info,
+        }
+    }
+
+    fn generation(&self, slot: Slot) -> u64 {
+        match slot {
+            Slot::Strip | Slot::Large => self.generation,
+            Slot::Info => self.info_generation,
         }
     }
 
     /// Takes back a protocol from the resize worker. Results for an image
     /// that has since been replaced are dropped.
     pub fn finish_resize(&mut self, done: ResizeDone) {
-        if done.generation != self.generation {
+        if done.generation != self.generation(done.slot) {
             return;
         }
         let state = self.slot_mut(done.slot);
@@ -352,7 +430,7 @@ impl ArtState {
     }
 
     /// Call before drawing a frame. `overlay` is true when a popup or the
-    /// help screen is open.
+    /// help screen is open. The info popup's own cover still draws.
     pub fn begin_frame(&mut self, overlay: bool) {
         self.suppressed = overlay;
         self.drawn.clear();
@@ -385,11 +463,11 @@ impl ArtState {
         if area.is_empty() {
             return;
         }
-        if self.suppressed {
+        if self.suppressed && slot != Slot::Info {
             draw_placeholder(frame, area);
             return;
         }
-        let generation = self.generation;
+        let generation = self.generation(slot);
         let resizer = self.resizer.clone();
         let state = self.slot_mut(slot);
         let Some(mut protocol) = state.protocol.take() else {
@@ -439,7 +517,7 @@ impl ArtState {
                     ..row
                 }
             }
-            Slot::Large => centered(area, size.width, size.height),
+            Slot::Large | Slot::Info => centered(area, size.width, size.height),
         };
         protocol.render(rect, frame.buffer_mut());
         state.protocol = Some(protocol);

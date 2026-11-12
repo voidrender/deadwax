@@ -1,5 +1,6 @@
 pub mod art;
 pub mod help;
+pub mod info;
 pub mod library;
 pub mod login;
 pub mod now_playing;
@@ -26,8 +27,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if app.help {
         help::draw(frame, area);
     }
-    if let Some(popup) = &app.popup {
-        draw_popup(frame, area, popup);
+    match &app.popup {
+        Some(Popup::Info(info)) => {
+            let info = info.clone();
+            info::draw(frame, area, &info, &mut app.art);
+        }
+        Some(popup) => draw_popup(frame, area, popup),
+        None => {}
     }
     app.art.end_frame();
 }
@@ -117,6 +123,8 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
             playlists::draw_text_input(frame, area, title, value);
         }
         Popup::PlaylistPicker(picker) => playlists::draw_picker(frame, area, picker),
+        // Drawn by `info::draw`, which needs the art state.
+        Popup::Info(_) => {}
     }
 }
 

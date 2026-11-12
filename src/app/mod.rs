@@ -1,3 +1,4 @@
+pub mod info;
 pub mod keys;
 pub mod library;
 pub mod login;
@@ -73,6 +74,7 @@ pub enum Popup {
         on_submit: TextPurpose,
     },
     PlaylistPicker(PickerState),
+    Info(Box<info::Info>),
 }
 
 /// Results of async work spawned by the runtime. The task that issues a
@@ -699,6 +701,7 @@ impl App {
                 on_submit,
             } => self.text_input_key(title, value, on_submit, key),
             Popup::PlaylistPicker(picker) => self.picker_key(picker, key),
+            Popup::Info(info) => (self.info_key(info, key), Vec::new()),
         };
         self.popup = keep;
         effects
@@ -746,6 +749,7 @@ impl App {
             Action::AddToPlaylist => return self.open_picker(),
             Action::PlayRandom => return vec![Effect::PlayRandom(RANDOM_COUNT)],
             Action::CycleSort => return self.cycle_sort(),
+            Action::ShowInfo => return self.open_info(),
             Action::TogglePause => PlayerCommand::TogglePause,
             Action::Next => PlayerCommand::Next,
             Action::Prev => PlayerCommand::Prev,

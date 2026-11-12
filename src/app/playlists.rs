@@ -74,7 +74,7 @@ impl PlaylistsState {
         Vec::new()
     }
 
-    fn selected_list(&self) -> Option<&Playlist> {
+    pub(super) fn selected_list(&self) -> Option<&Playlist> {
         self.lists.loaded()?.get(self.sel[0])
     }
 

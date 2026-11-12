@@ -130,6 +130,7 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 | `r` | Cycle repeat: off, all, one |
 | `R` | Play 200 random songs |
 | `f` | Toggle favorite on the selected song (or the current track in Now Playing) |
+| `i` | Show the cover and details of the selected song, album, artist, or playlist (or the current track in Now Playing). `i`, `Esc`, or `Enter` closes it |
 | `a` | Add the selected song to a playlist (picker popup) |
 | `o` | Change the sort order of the focused list (see below) |
 | `X` | Log out (asks to confirm) |
