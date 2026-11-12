@@ -134,8 +134,10 @@ impl PublicArtResolver {
 
     async fn caa(&self, mbid: &str) -> Step {
         let url = format!("{}/release/{mbid}/front-500", self.endpoints.caa);
-        match self.http.head(url).send().await {
-            Ok(r) if r.status().is_success() => Step::Hit(r.url().to_string()),
+        // The HEAD follows redirects, so success means the image exists. The
+        // canonical URL is kept rather than the archive.org node it lands on.
+        match self.http.head(&url).send().await {
+            Ok(r) if r.status().is_success() => Step::Hit(url),
             Ok(r) if is_transient(r.status()) => Step::Failed,
             Ok(_) => Step::Miss,
             Err(_) => Step::Failed,
@@ -312,7 +314,34 @@ mod tests {
             .resolve(&q("Boards of Canada", "MHTRTC", Some("mb-1")))
             .await
             .unwrap();
-        assert!(url.ends_with("/img/final.jpg"), "{url}");
+        // The canonical URL is cached, not the redirect target, which is a
+        // mirror node that can change.
+        assert_eq!(url, format!("{}/release/mb-1/front-500", s.uri()));
+    }
+
+    #[tokio::test]
+    async fn mbid_redirect_to_missing_image_is_a_miss() {
+        let s = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .and(path("/release/mb-1/front-500"))
+            .respond_with(ResponseTemplate::new(307).insert_header("location", "/img/gone.jpg"))
+            .mount(&s)
+            .await;
+        Mock::given(method("HEAD"))
+            .and(path("/img/gone.jpg"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "resultCount": 0, "results": []
+            })))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let r = PublicArtResolver::new(eps(&s), dir.path().join("pub.json"));
+        assert_eq!(r.resolve(&q("A", "B", Some("mb-1"))).await, None);
     }
 
     #[tokio::test]
