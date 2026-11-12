@@ -427,7 +427,13 @@ impl App {
         let Some(song) = self.selected_song() else {
             return Vec::new();
         };
-        let (song_id, starred) = (song.id.clone(), !song.starred);
+        let (song_id, previous) = (song.id.clone(), song.starred);
+        if self.pending_stars.contains_key(&song_id) {
+            self.set_status("Still saving favorite…");
+            return Vec::new();
+        }
+        let starred = !previous;
+        self.pending_stars.insert(song_id.clone(), previous);
         self.library.set_starred(&song_id, starred);
         vec![Effect::ToggleStar { song_id, starred }]
     }
@@ -455,17 +461,24 @@ impl App {
                 song_id,
                 starred,
                 result,
-            } => match result {
-                Ok(()) => vec![Effect::Player(PlayerCommand::SetStarred {
-                    song_id,
-                    starred,
-                })],
-                Err(msg) => {
-                    self.library.set_starred(&song_id, !starred);
-                    self.set_status(format!("Couldn't update favorite: {msg}"));
-                    Vec::new()
+            } => {
+                let previous = self.pending_stars.remove(&song_id).unwrap_or(!starred);
+                match result {
+                    Ok(()) => {
+                        // Re-apply in case the tracks were reloaded meanwhile.
+                        self.library.set_starred(&song_id, starred);
+                        vec![Effect::Player(PlayerCommand::SetStarred {
+                            song_id,
+                            starred,
+                        })]
+                    }
+                    Err(msg) => {
+                        self.library.set_starred(&song_id, previous);
+                        self.set_status(format!("Couldn't update favorite: {msg}"));
+                        Vec::new()
+                    }
                 }
-            },
+            }
             ApiResult::Random(r) => match r {
                 Ok(songs) if songs.is_empty() => {
                     self.set_status("The server returned no songs");
@@ -705,6 +718,47 @@ mod tests {
         assert!(fx.is_empty());
         assert!(!app.library.tracks.loaded().unwrap()[0].starred);
         assert!(app.status_text().unwrap().contains("timeout"));
+    }
+
+    fn starred_result(id: &str, starred: bool, ok: bool) -> ApiResult {
+        ApiResult::Starred {
+            song_id: id.into(),
+            starred,
+            result: if ok { Ok(()) } else { Err("boom".into()) },
+        }
+    }
+
+    #[test]
+    fn rapid_presses_send_one_toggle() {
+        let mut app = loaded_app();
+        app.library.focus = Column::Tracks;
+        assert_eq!(press(&mut app, 'f').len(), 1);
+        assert!(press(&mut app, 'f').is_empty());
+        assert!(app.library.tracks.loaded().unwrap()[0].starred);
+        api(&mut app, starred_result("s0", true, true));
+        assert_eq!(press(&mut app, 'f').len(), 1);
+    }
+
+    #[test]
+    fn failure_restores_the_previous_value() {
+        let mut app = loaded_app();
+        app.library.focus = Column::Tracks;
+        app.library.set_starred("s0", true);
+        press(&mut app, 'f');
+        assert!(!app.library.tracks.loaded().unwrap()[0].starred);
+        api(&mut app, starred_result("s0", false, false));
+        assert!(app.library.tracks.loaded().unwrap()[0].starred);
+        assert!(app.pending_stars.is_empty());
+    }
+
+    #[test]
+    fn success_after_reload_reapplies_the_flag() {
+        let mut app = loaded_app();
+        app.library.focus = Column::Tracks;
+        press(&mut app, 'f');
+        app.library.tracks = Loadable::Loaded(vec![song("s0")]);
+        api(&mut app, starred_result("s0", true, true));
+        assert!(app.library.tracks.loaded().unwrap()[0].starred);
     }
 
     #[test]

@@ -213,6 +213,8 @@ pub struct App {
     pub server: String,
     pub view: View,
     pub library: LibraryState,
+    /// Songs with a star toggle in flight, mapped to their value before it.
+    pub pending_stars: std::collections::HashMap<String, bool>,
     pub now_playing: bool,
     pub help: bool,
     pub popup: Option<Popup>,
@@ -256,6 +258,7 @@ impl App {
         self.help = false;
         self.popup = None;
         self.library = LibraryState::default();
+        self.pending_stars.clear();
         self.login = LoginState {
             server: server.to_string(),
             username: username.to_string(),
