@@ -1,3 +1,4 @@
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 
 use anyhow::bail;
@@ -10,19 +11,44 @@ pub struct MacNotifier {
 }
 
 impl MacNotifier {
-    /// Uses `SENRITSU_NOTIFIER_APP` when set, else `~/Applications/SenritsuNotifier.app`.
+    /// Finds the helper app. See [`resolve_app_path`] for the search order.
     pub fn from_env() -> Self {
-        let app_path =
-            std::env::var_os("SENRITSU_NOTIFIER_APP").map_or_else(default_app_path, PathBuf::from);
-        Self { app_path }
+        let exe = std::env::current_exe().and_then(std::fs::canonicalize).ok();
+        let home = directories::UserDirs::new().map(|d| d.home_dir().to_path_buf());
+        Self {
+            app_path: resolve_app_path(
+                std::env::var_os("SENRITSU_NOTIFIER_APP"),
+                exe.as_deref(),
+                home.as_deref(),
+            ),
+        }
     }
 }
 
-fn default_app_path() -> PathBuf {
-    directories::UserDirs::new()
-        .map(|d| d.home_dir().to_path_buf())
-        .unwrap_or_default()
-        .join("Applications/SenritsuNotifier.app")
+const APP_NAME: &str = "SenritsuNotifier.app";
+
+/// Picks the helper app path, in this order:
+///
+/// 1. `SENRITSU_NOTIFIER_APP`, when set.
+/// 2. `../libexec/SenritsuNotifier.app` next to the executable, when it
+///    exists. Package managers such as Homebrew install it there. `exe` must
+///    already have symlinks resolved, because Homebrew's `bin/senritsu` is a
+///    symlink into the package's own directory.
+/// 3. `~/Applications/SenritsuNotifier.app`, where the install script puts it.
+fn resolve_app_path(env: Option<OsString>, exe: Option<&Path>, home: Option<&Path>) -> PathBuf {
+    if let Some(path) = env {
+        return PathBuf::from(path);
+    }
+    let bundled = exe
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(|prefix| prefix.join("libexec").join(APP_NAME));
+    if let Some(path) = bundled.filter(|p| p.exists()) {
+        return path;
+    }
+    home.unwrap_or_else(|| Path::new(""))
+        .join("Applications")
+        .join(APP_NAME)
 }
 
 /// Arguments passed to the helper after `--args`.
@@ -119,5 +145,40 @@ mod tests {
         };
         let err = notifier.notify(&note(None)).unwrap_err().to_string();
         assert!(err.contains("install-macos-notifier.sh"), "{err}");
+    }
+
+    #[test]
+    fn env_var_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = bundled_prefix(&dir).join("bin/senritsu");
+        let got = resolve_app_path(Some("/x/Custom.app".into()), Some(&exe), Some(dir.path()));
+        assert_eq!(got, PathBuf::from("/x/Custom.app"));
+    }
+
+    #[test]
+    fn bundled_helper_beats_home() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefix = bundled_prefix(&dir);
+        let got = resolve_app_path(None, Some(&prefix.join("bin/senritsu")), Some(dir.path()));
+        assert_eq!(got, prefix.join("libexec/SenritsuNotifier.app"));
+    }
+
+    #[test]
+    fn falls_back_to_home_applications() {
+        let dir = tempfile::tempdir().unwrap();
+        let exe = dir.path().join("cargo/bin/senritsu");
+        let got = resolve_app_path(None, Some(&exe), Some(Path::new("/Users/a")));
+        assert_eq!(
+            got,
+            PathBuf::from("/Users/a/Applications/SenritsuNotifier.app")
+        );
+    }
+
+    /// Lays out `<dir>/Cellar/senritsu/1.0/libexec/SenritsuNotifier.app`, the
+    /// way Homebrew installs it, and returns the version directory.
+    fn bundled_prefix(dir: &tempfile::TempDir) -> PathBuf {
+        let prefix = dir.path().join("Cellar/senritsu/1.0");
+        std::fs::create_dir_all(prefix.join("libexec/SenritsuNotifier.app")).unwrap();
+        prefix
     }
 }

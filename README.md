@@ -30,7 +30,13 @@ scripts/install-macos-notifier.sh
 
 The script compiles the helper with `swiftc`, ad-hoc signs it, and copies it to `~/Applications/SenritsuNotifier.app`. It then launches the app once, so macOS asks for notification permission the first time. Allow it in the prompt.
 
-To build without installing, pass `--build-only`. The app is left in `target/notifier/SenritsuNotifier.app`. Set `SENRITSU_NOTIFIER_APP` to a different app path if you keep the helper elsewhere.
+To build without installing, pass `--build-only`. The app is left in `target/notifier/SenritsuNotifier.app`.
+
+Senritsu looks for the helper in this order:
+
+1. The path in `SENRITSU_NOTIFIER_APP`, when it is set.
+2. `../libexec/SenritsuNotifier.app` relative to the `senritsu` executable, after resolving symlinks. The Homebrew formula installs it there.
+3. `~/Applications/SenritsuNotifier.app`.
 
 On Linux, notifications go through the desktop notification service (D-Bus), so no setup is needed.
 
