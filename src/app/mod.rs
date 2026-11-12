@@ -215,6 +215,10 @@ pub enum AppEvent {
         cover_id: String,
         image: DynamicImage,
     },
+    /// The cover could not be loaded.
+    CoverFailed {
+        cover_id: String,
+    },
     /// Cover art resized and encoded off the UI thread.
     ArtResized(ResizeDone),
     /// A message from a background service, shown for a while.
@@ -380,6 +384,9 @@ pub struct App {
     pub now_playing: bool,
     /// Cover art for the current track.
     pub art: ArtState,
+    /// The queue item whose cover failed to load, so progress snapshots for
+    /// that same track do not refetch it. The next track retries.
+    cover_failed_on: Option<u64>,
     pub help: bool,
     pub popup: Option<Popup>,
     pub status: Option<(String, Instant)>,
@@ -491,6 +498,12 @@ impl App {
                 self.art.set_image(cover_id, image);
                 Vec::new()
             }
+            AppEvent::CoverFailed { cover_id } => {
+                if self.art.forget(&cover_id) {
+                    self.cover_failed_on = self.current_item().map(|item| item.uid);
+                }
+                Vec::new()
+            }
             AppEvent::ArtResized(done) => {
                 self.art.finish_resize(done);
                 Vec::new()
@@ -505,10 +518,13 @@ impl App {
     /// Points the art at the current track's cover, loading it when it
     /// changed. A track without a cover clears the art.
     pub(crate) fn sync_cover(&mut self) -> Vec<Effect> {
+        let uid = self.current_item().map(|item| item.uid);
+        if self.cover_failed_on.is_some() && self.cover_failed_on == uid {
+            return Vec::new();
+        }
+        self.cover_failed_on = None;
         let cover = self
-            .player
-            .current
-            .and_then(|i| self.player.items.get(i))
+            .current_item()
             .and_then(|item| item.song.cover_art.clone());
         match cover {
             Some(id) if self.art.expect(id.clone()) => vec![Effect::LoadCover(id)],
@@ -518,6 +534,10 @@ impl App {
                 Vec::new()
             }
         }
+    }
+
+    fn current_item(&self) -> Option<&crate::player::queue::QueueItem> {
+        self.player.current.and_then(|i| self.player.items.get(i))
     }
 
     fn handle_api(&mut self, result: ApiResult) -> Vec<Effect> {
@@ -995,6 +1015,40 @@ mod tests {
         assert!(app.handle_event(playing(track("b", None))).is_empty());
         assert!(!app.art.has_image());
         assert_eq!(app.art.cover_id, None);
+    }
+
+    #[test]
+    fn failed_cover_is_retried_on_the_next_track_not_every_snapshot() {
+        let mut app = App::new();
+        app.handle_event(playing(track("a", Some("al-1"))));
+        assert!(
+            app.handle_event(AppEvent::CoverFailed {
+                cover_id: "al-1".into()
+            })
+            .is_empty()
+        );
+        assert_eq!(app.art.cover_id, None);
+        // Same track again (a progress snapshot): no refetch loop.
+        assert!(
+            app.handle_event(playing(track("a", Some("al-1"))))
+                .is_empty()
+        );
+        // Next track on the same album retries.
+        assert_eq!(
+            app.handle_event(playing(track("bb", Some("al-1")))),
+            [Effect::LoadCover("al-1".into())]
+        );
+    }
+
+    #[test]
+    fn stale_cover_failure_is_ignored() {
+        let mut app = App::new();
+        app.handle_event(playing(track("a", Some("al-1"))));
+        app.handle_event(playing(track("bb", Some("al-2"))));
+        app.handle_event(AppEvent::CoverFailed {
+            cover_id: "al-1".into(),
+        });
+        assert_eq!(app.art.cover_id.as_deref(), Some("al-2"));
     }
 
     #[test]

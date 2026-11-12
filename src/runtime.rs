@@ -425,6 +425,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
         Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, id, true),
         Effect::LoadCover(id) => {
             let Some(client) = current_client(&ctx.client) else {
+                let _ = ctx.tx.send(AppEvent::CoverFailed { cover_id: id });
                 return;
             };
             let cache = CoverCache::new(paths::cache_dir().join("art"), client);
@@ -437,7 +438,10 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                             image,
                         });
                     }
-                    Err(e) => tracing::warn!("cover {id} unavailable: {e:#}"),
+                    Err(e) => {
+                        tracing::warn!("cover {id} unavailable: {e:#}");
+                        let _ = tx.send(AppEvent::CoverFailed { cover_id: id });
+                    }
                 }
             });
         }

@@ -291,6 +291,16 @@ impl ArtState {
         true
     }
 
+    /// A load of `cover_id` failed. When it is still the wanted cover, forget
+    /// it so a later `expect` asks for it again. Returns whether it was.
+    pub fn forget(&mut self, cover_id: &str) -> bool {
+        if self.cover_id.as_deref() != Some(cover_id) {
+            return false;
+        }
+        self.cover_id = None;
+        true
+    }
+
     /// The current track has no cover: back to the placeholder.
     pub fn clear(&mut self) {
         if self.cover_id.is_some() || self.has_image() {
