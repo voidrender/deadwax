@@ -48,8 +48,14 @@ fn fixture() -> Fixture {
     }
 }
 
+/// Skips when mpv is missing, unless `SENRITSU_REQUIRE_MPV` is set. CI sets
+/// it so these tests cannot pass by skipping.
 fn skip() -> bool {
     if !mpv_available() {
+        assert!(
+            std::env::var_os("SENRITSU_REQUIRE_MPV").is_none(),
+            "SENRITSU_REQUIRE_MPV is set but mpv is not installed"
+        );
         eprintln!("mpv not installed, skipping");
         return true;
     }
