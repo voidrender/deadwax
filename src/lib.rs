@@ -3,4 +3,5 @@ pub mod credentials;
 pub mod logging;
 pub mod paths;
 pub mod player;
+pub mod scrobble;
 pub mod subsonic;
