@@ -13,6 +13,9 @@ use ratatui::widgets::Paragraph;
 pub const HEIGHT: u16 = 3;
 /// Columns reserved for cover art.
 pub const ART_WIDTH: u16 = 6;
+/// Widest the progress line and the rest of the strip's text get, so they
+/// stay together on wide terminals instead of stretching edge to edge.
+pub const MAX_PROGRESS_WIDTH: u16 = 80;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let [art, _, info] = Layout::horizontal([
@@ -22,6 +25,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     ])
     .areas(area);
     app.art.render(frame, art, Slot::Strip);
+    // The text, bar, and indicators share one width, so the indicators sit
+    // at the end of the bar instead of the far edge of a wide window.
+    let info = Rect {
+        width: info.width.min(MAX_PROGRESS_WIDTH),
+        ..info
+    };
 
     let [track, progress, footer] = Layout::vertical([Constraint::Length(1); 3]).areas(info);
     frame.render_widget(Paragraph::new(track_line(&app.player)), track);
@@ -53,7 +62,9 @@ fn track_line(snap: &PlayerSnapshot) -> Line<'static> {
     Line::from(spans)
 }
 
+/// The play state, times, and bar, at most `MAX_PROGRESS_WIDTH` wide.
 pub(super) fn progress_line(snap: &PlayerSnapshot, width: u16) -> Line<'static> {
+    let width = width.min(MAX_PROGRESS_WIDTH);
     let icon = match snap.status {
         Status::Playing => "▶",
         Status::Paused => "⏸",
@@ -143,4 +154,49 @@ fn modes_line(snap: &PlayerSnapshot) -> Line<'static> {
         theme::muted(),
     ));
     Line::from(spans)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn snap() -> PlayerSnapshot {
+        PlayerSnapshot {
+            status: Status::Playing,
+            position: 30.0,
+            duration: 120.0,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn indicators_end_with_the_bar_on_wide_terminals() {
+        use crate::ui::testing::buffer_text;
+        let mut app = App::new();
+        app.player = snap();
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, HEIGHT)).unwrap();
+        term.draw(|f| draw(f, f.area(), &mut app)).unwrap();
+        let text = buffer_text(term.backend().buffer());
+        let rows: Vec<&str> = text.lines().collect();
+        let end = usize::from(ART_WIDTH) + 1 + usize::from(MAX_PROGRESS_WIDTH);
+        let bar: Vec<char> = rows[1].chars().collect();
+        let tabs: Vec<char> = rows[2].chars().collect();
+        assert_eq!(bar[end - 1], '0', "{text}");
+        assert_eq!(tabs[end - 1], '%', "{text}");
+        assert!(bar[end..].iter().all(|c| *c == ' '), "{text}");
+    }
+
+    #[test]
+    fn progress_line_fills_narrow_widths_and_caps_wide_ones() {
+        assert_eq!(progress_line(&snap(), 40).width(), 40);
+        assert_eq!(
+            progress_line(&snap(), MAX_PROGRESS_WIDTH).width(),
+            usize::from(MAX_PROGRESS_WIDTH)
+        );
+        assert_eq!(
+            progress_line(&snap(), 300).width(),
+            usize::from(MAX_PROGRESS_WIDTH)
+        );
+    }
 }
