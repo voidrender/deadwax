@@ -156,3 +156,9 @@ The log is a single file, `senritsu.log`, that is appended to and never rotated.
 - The queue is saved on exit and restored on the next start.
 - If mpv dies mid-track, Senritsu restarts it and resumes.
 - Playback is gapless where mpv can do it.
+
+## License
+
+Senritsu is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
+
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in Senritsu, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.
