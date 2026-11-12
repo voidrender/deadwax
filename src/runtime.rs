@@ -867,6 +867,11 @@ async fn shutdown_engine(ctx: &mut Ctx) {
 const OUTBOX_UNAVAILABLE: &str =
     "Couldn't open the scrobble outbox. Scrobbles made offline will be lost.";
 
+/// Names a login the way the keychain does: `"{username}@{server_url}"`.
+fn account_key(client: &SubsonicClient) -> String {
+    format!("{}@{}", client.username(), client.server_url())
+}
+
 fn unix_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -940,7 +945,12 @@ fn start_services(ctx: &mut Ctx) -> Services {
     let state_path = data.join("state.json");
     ctx.state_path = Some(state_path.clone());
     let (saver_stop, stop_rx) = oneshot::channel();
-    let saver = tokio::spawn(queue_saver(state_path, ctx.snapshot.clone(), stop_rx));
+    let saver = tokio::spawn(queue_saver(
+        state_path,
+        ctx.snapshot.clone(),
+        ctx.client.clone(),
+        stop_rx,
+    ));
     Services {
         presence,
         flusher,
@@ -1053,7 +1063,12 @@ async fn send_scrobble(client: SubsonicClient, outbox: SharedOutbox, action: Scr
             let mut guard = outbox.lock().await;
             match guard.as_mut() {
                 Some(ob) => {
-                    if let Err(e) = ob.push(PendingScrobble { song_id, time_ms }) {
+                    let pending = PendingScrobble {
+                        song_id,
+                        time_ms,
+                        account: account_key(&client),
+                    };
+                    if let Err(e) = ob.push(pending) {
                         tracing::warn!("saving the scrobble outbox failed: {e:#}");
                     }
                 }
@@ -1070,7 +1085,7 @@ async fn flush_outbox(client: &SubsonicClient, outbox: &SharedOutbox) {
         return;
     };
     let result = ob
-        .flush(|p| {
+        .flush(&account_key(client), |p| {
             let c = client.clone();
             async move { c.scrobble(&p.song_id, p.time_ms, true).await }
         })
@@ -1097,12 +1112,15 @@ async fn outbox_flusher(client: SharedClient, outbox: SharedOutbox) {
 /// Saves the queue every `SAVE_INTERVAL` while it has songs, right away
 /// when it is emptied, and once more when told to stop. A queue that never
 /// had songs this run is never written, so quitting from the login screen
-/// keeps the saved queue.
+/// keeps the saved queue. Saves are tagged with the logged-in account, or
+/// the last one seen when quitting after a logout.
 async fn queue_saver(
     path: PathBuf,
     mut snapshot: watch::Receiver<PlayerSnapshot>,
+    client: SharedClient,
     mut stop: oneshot::Receiver<()>,
 ) {
+    let mut account = String::new();
     let start = tokio::time::Instant::now() + SAVE_INTERVAL;
     let mut tick = tokio::time::interval_at(start, SAVE_INTERVAL);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -1115,7 +1133,7 @@ async fn queue_saver(
             _ = tick.tick() => {
                 let snap = snapshot.borrow().clone();
                 if !snap.items.is_empty() {
-                    save_queue(&path, &snap).await;
+                    save_queue(&path, &snap, &client, &mut account).await;
                 }
             }
             changed = snapshot.changed(), if open => match changed {
@@ -1125,7 +1143,8 @@ async fn queue_saver(
                         live = true;
                     } else if live {
                         live = false;
-                        save_queue(&path, &PlayerSnapshot::default()).await;
+                        save_queue(&path, &PlayerSnapshot::default(), &client, &mut account)
+                            .await;
                     }
                 }
                 Err(_) => open = false,
@@ -1134,12 +1153,23 @@ async fn queue_saver(
     }
     let snap = snapshot.borrow().clone();
     if live || !snap.items.is_empty() {
-        save_queue(&path, &snap).await;
+        save_queue(&path, &snap, &client, &mut account).await;
     }
 }
 
-async fn save_queue(path: &Path, snap: &PlayerSnapshot) {
-    let state = PersistedQueue::from_snapshot(snap);
+async fn save_queue(
+    path: &Path,
+    snap: &PlayerSnapshot,
+    client: &SharedClient,
+    account: &mut String,
+) {
+    if let Some(c) = current_client(client) {
+        *account = account_key(&c);
+    }
+    let state = PersistedQueue {
+        account: account.clone(),
+        ..PersistedQueue::from_snapshot(snap)
+    };
     let path = path.to_path_buf();
     match tokio::task::spawn_blocking(move || state.save(&path)).await {
         Ok(Ok(())) => {}
@@ -1150,23 +1180,30 @@ async fn save_queue(path: &Path, snap: &PlayerSnapshot) {
 
 /// Restores the saved queue, paused, unless something is already queued.
 fn spawn_restore(ctx: &Ctx) {
-    if let Some(path) = ctx.state_path.clone() {
+    if let (Some(path), Some(client)) = (ctx.state_path.clone(), current_client(&ctx.client)) {
         tokio::spawn(restore_queue(
             path,
+            account_key(&client),
             ctx.snapshot.clone(),
             ctx.player.clone(),
         ));
     }
 }
 
-/// A missing or unreadable state file is logged and skipped.
+/// A missing or unreadable state file is logged and skipped, and so is a
+/// queue saved by a different login.
 async fn restore_queue(
     path: PathBuf,
+    account: String,
     snapshot: watch::Receiver<PlayerSnapshot>,
     player: mpsc::UnboundedSender<PlayerCommand>,
 ) {
     let saved = match tokio::task::spawn_blocking(move || PersistedQueue::load(&path)).await {
-        Ok(Ok(Some(saved))) if !saved.songs.is_empty() => saved,
+        Ok(Ok(Some(saved)))
+            if !saved.songs.is_empty() && !saved.account.is_empty() && saved.account == account =>
+        {
+            saved
+        }
         Ok(Ok(_)) => return,
         Ok(Err(e)) => {
             tracing::warn!("ignoring the saved queue: {e:#}");
@@ -1651,6 +1688,20 @@ mod tests {
         }
     }
 
+    const ALICE: &str = "alice@http://m.example";
+
+    fn alice() -> SharedClient {
+        let shared = SharedClient::default();
+        set_client(
+            &shared,
+            Some(
+                SubsonicClient::new("http://m.example", "alice", Auth::Password("p".into()))
+                    .unwrap(),
+            ),
+        );
+        shared
+    }
+
     fn saved_ids(path: &Path) -> Option<Vec<String>> {
         PersistedQueue::load(path)
             .unwrap()
@@ -1665,14 +1716,14 @@ mod tests {
         // Nothing was ever queued: an earlier saved queue is left alone.
         let (_tx, rx) = watch::channel(PlayerSnapshot::default());
         let (stop, stop_rx) = oneshot::channel();
-        let saver = tokio::spawn(queue_saver(path.clone(), rx, stop_rx));
+        let saver = tokio::spawn(queue_saver(path.clone(), rx, alice(), stop_rx));
         stop.send(()).unwrap();
         saver.await.unwrap();
         assert!(!path.exists());
 
         let (tx, rx) = watch::channel(PlayerSnapshot::default());
         let (stop, stop_rx) = oneshot::channel();
-        let saver = tokio::spawn(queue_saver(path.clone(), rx, stop_rx));
+        let saver = tokio::spawn(queue_saver(path.clone(), rx, alice(), stop_rx));
         tx.send(snap_with(&["a", "b"])).unwrap();
         tokio::task::yield_now().await;
         // The engine is gone by the time the final save runs.
@@ -1682,6 +1733,7 @@ mod tests {
         let saved = PersistedQueue::load(&path).unwrap().unwrap();
         assert_eq!(saved.position, 7.0);
         assert_eq!(saved.volume, 80);
+        assert_eq!(saved.account, ALICE);
         assert_eq!(saved_ids(&path).unwrap(), ["a", "b"]);
     }
 
@@ -1694,7 +1746,7 @@ mod tests {
             .unwrap();
         let (tx, rx) = watch::channel(PlayerSnapshot::default());
         let (_stop, stop_rx) = oneshot::channel();
-        tokio::spawn(queue_saver(path.clone(), rx, stop_rx));
+        tokio::spawn(queue_saver(path.clone(), rx, alice(), stop_rx));
         tx.send(snap_with(&["a"])).unwrap();
         tokio::task::yield_now().await;
         tx.send(PlayerSnapshot::default()).unwrap();
@@ -1713,20 +1765,44 @@ mod tests {
         let path = dir.path().join("state.json");
         let (player, mut player_rx) = mpsc::unbounded_channel();
 
+        let restore = |snap: &watch::Receiver<PlayerSnapshot>, account: &str| {
+            restore_queue(
+                path.clone(),
+                account.to_string(),
+                snap.clone(),
+                player.clone(),
+            )
+        };
+
         // Missing and corrupt files are skipped.
         let (_tx, empty) = watch::channel(PlayerSnapshot::default());
-        restore_queue(path.clone(), empty.clone(), player.clone()).await;
+        restore(&empty, ALICE).await;
         std::fs::write(&path, "{nope").unwrap();
-        restore_queue(path.clone(), empty.clone(), player.clone()).await;
+        restore(&empty, ALICE).await;
         assert!(player_rx.try_recv().is_err());
 
-        let saved = PersistedQueue::from_snapshot(&snap_with(&["a", "b"]));
+        let saved = PersistedQueue {
+            account: ALICE.into(),
+            ..PersistedQueue::from_snapshot(&snap_with(&["a", "b"]))
+        };
         saved.save(&path).unwrap();
         let (_tx2, busy) = watch::channel(snap_with(&["x"]));
-        restore_queue(path.clone(), busy, player.clone()).await;
+        restore(&busy, ALICE).await;
         assert!(player_rx.try_recv().is_err());
 
-        restore_queue(path.clone(), empty, player).await;
+        // Another login, or a file with no account, does not get the queue.
+        restore(&empty, "bob@http://m.example").await;
+        PersistedQueue {
+            account: String::new(),
+            ..saved.clone()
+        }
+        .save(&path)
+        .unwrap();
+        restore(&empty, "").await;
+        assert!(player_rx.try_recv().is_err());
+
+        saved.save(&path).unwrap();
+        restore(&empty, ALICE).await;
         assert_eq!(player_rx.try_recv().unwrap(), PlayerCommand::Restore(saved));
     }
 
@@ -1756,7 +1832,9 @@ mod tests {
             },
         )
         .await;
-        assert_eq!(Outbox::open(outbox_path.clone()).unwrap().len(), 1);
+        let queued = Outbox::open(outbox_path.clone()).unwrap();
+        assert_eq!(queued.len(), 1);
+        drop(queued);
 
         let server = MockServer::start().await;
         Mock::given(path("/rest/scrobble"))
@@ -1767,12 +1845,25 @@ mod tests {
             .await;
         let online =
             SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap();
+        // A scrobble this login made earlier, offline.
+        outbox
+            .lock()
+            .await
+            .as_mut()
+            .unwrap()
+            .push(PendingScrobble {
+                song_id: "d".into(),
+                time_ms: 5,
+                account: account_key(&online),
+            })
+            .unwrap();
         send_scrobble(online, Arc::clone(&outbox), submit("c")).await;
-        assert!(Outbox::open(outbox_path).unwrap().is_empty());
         let sent: Vec<String> = paths(&server).await;
         assert_eq!(sent.len(), 2, "{sent:?}");
         assert!(sent[0].contains("id=c") && sent[0].contains("submission=true"));
-        assert!(sent[1].contains("id=a") && sent[1].contains("time=5"));
+        assert!(sent[1].contains("id=d") && sent[1].contains("time=5"));
+        // The scrobble made on the other server stays for that login.
+        assert_eq!(Outbox::open(outbox_path).unwrap().len(), 1);
     }
 
     /// One test covers both cases because the flag is process-wide.

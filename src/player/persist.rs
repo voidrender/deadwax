@@ -16,6 +16,10 @@ pub struct PersistedQueue {
     pub shuffle: bool,
     pub repeat: RepeatMode,
     pub volume: u8,
+    /// `"{username}@{server_url}"` of the login the queue belongs to. A
+    /// queue is only restored for that login; empty never matches.
+    #[serde(default)]
+    pub account: String,
 }
 
 impl PersistedQueue {
@@ -61,6 +65,7 @@ impl PersistedQueue {
             shuffle: snap.shuffle,
             repeat: snap.repeat,
             volume: snap.volume,
+            account: String::new(),
         }
     }
 }
@@ -75,6 +80,7 @@ impl Queue {
             shuffle: self.shuffle,
             repeat: self.repeat,
             volume,
+            account: String::new(),
         }
     }
 
@@ -219,6 +225,7 @@ mod tests {
             shuffle: false,
             repeat: RepeatMode::Off,
             volume: 100,
+            account: String::new(),
         };
         let q = Queue::from_persisted(p);
         assert_eq!(q.order, vec![0, 1]);

@@ -1129,6 +1129,7 @@ mod tests {
             shuffle: false,
             repeat: RepeatMode::Off,
             volume: 60,
+            account: String::new(),
         }))
         .await;
         assert_eq!(
