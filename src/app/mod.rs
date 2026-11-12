@@ -139,12 +139,14 @@ impl App {
         if self.popup.is_some() {
             return self.handle_popup_key(key);
         }
-        if self.help && key.code == KeyCode::Esc {
-            self.help = false;
-            return Vec::new();
-        }
         match keys::global_action(&key) {
             Some(action) => self.run_action(action),
+            // Global keys act through the help overlay. Any other key,
+            // Esc included, only dismisses it.
+            None if self.help => {
+                self.help = false;
+                Vec::new()
+            }
             None => Vec::new(),
         }
     }
@@ -244,6 +246,23 @@ mod tests {
         assert!(!app.help);
         press(&mut app, '?');
         press_code(&mut app, KeyCode::Esc);
+        assert!(!app.help);
+    }
+
+    #[test]
+    fn help_closes_on_non_global_keys_but_globals_still_work() {
+        let mut app = App::new();
+        app.help = true;
+        assert_eq!(
+            press(&mut app, ' '),
+            [Effect::Player(PlayerCommand::TogglePause)]
+        );
+        assert!(app.help);
+        press(&mut app, '2');
+        assert_eq!(app.view, View::Playlists);
+        assert!(app.help);
+
+        assert!(press(&mut app, 'j').is_empty());
         assert!(!app.help);
     }
 
