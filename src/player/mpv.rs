@@ -138,24 +138,35 @@ impl MpvBackend {
 
 impl AudioBackend for MpvBackend {
     async fn load(&mut self, url: &str, mode: LoadMode) -> anyhow::Result<EntryId> {
-        let args = match mode {
-            LoadMode::Replace { start, paused } => {
-                // Pause is set globally rather than as a per-file option: mpv
-                // resets per-file options when a file ends, which would carry
-                // the load-time pause state into the next gapless track.
-                self.command(json!(["set_property", "pause", paused]))
-                    .await?;
-                match start.filter(|s| s.is_finite() && *s > 0.0) {
-                    Some(s) => json!(["loadfile", url, "replace", -1, format!("start={s}")]),
-                    None => json!(["loadfile", url, "replace"]),
-                }
+        // Pause is set globally rather than as a per-file option: mpv resets
+        // per-file options when a file ends, which would carry the load-time
+        // pause state into the next gapless track. Pausing goes before the
+        // load and unpausing after it, so the old track never resumes.
+        let unpause_after = match mode {
+            LoadMode::Replace { paused: true, .. } => {
+                self.command(json!(["set_property", "pause", true])).await?;
+                false
             }
+            LoadMode::Replace { paused: false, .. } => true,
+            LoadMode::Append => false,
+        };
+        let args = match mode {
+            LoadMode::Replace { start, .. } => match start.filter(|s| s.is_finite() && *s > 0.0) {
+                Some(s) => json!(["loadfile", url, "replace", -1, format!("start={s}")]),
+                None => json!(["loadfile", url, "replace"]),
+            },
             LoadMode::Append => json!(["loadfile", url, "append"]),
         };
         let data = self.command(args).await?;
-        data.get("playlist_entry_id")
+        let id = data
+            .get("playlist_entry_id")
             .and_then(Value::as_i64)
-            .ok_or_else(|| anyhow!("mpv loadfile: reply had no playlist_entry_id"))
+            .ok_or_else(|| anyhow!("mpv loadfile: reply had no playlist_entry_id"))?;
+        if unpause_after {
+            self.command(json!(["set_property", "pause", false]))
+                .await?;
+        }
+        Ok(id)
     }
 
     /// Removes the entry with this id. An id that is no longer in the

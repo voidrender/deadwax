@@ -240,6 +240,33 @@ async fn pause_persists_across_transition() {
     );
 }
 
+/// Starting a new track from pause must not resume the old one first, so
+/// the unpause comes after the new file has started.
+#[tokio::test]
+async fn replace_from_pause_unpauses_after_the_new_file_starts() {
+    if skip() {
+        return;
+    }
+    let f = fixture();
+    let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
+    mpv.load(&f.a, PLAY).await.unwrap();
+    let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::PlaybackRestart).await;
+    assert!(ok, "never started: {seen:?}");
+    mpv.set_pause(true).await.unwrap();
+    let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::Paused(true)).await;
+    assert!(ok, "never paused: {seen:?}");
+
+    let e2 = mpv.load(&f.b, PLAY).await.unwrap();
+    let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e2)).await;
+    assert!(ok, "never started the new file: {seen:?}");
+    assert!(
+        !seen.contains(&BackendEvent::Paused(false)),
+        "the old track resumed before the new one started: {seen:?}"
+    );
+    let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::Paused(false)).await;
+    assert!(ok, "the new track never unpaused: {seen:?}");
+}
+
 #[tokio::test]
 async fn missing_file_reports_error() {
     if skip() {
