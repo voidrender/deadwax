@@ -2,12 +2,14 @@
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "macos")]
 mod macos;
 
 use std::path::PathBuf;
 
 #[cfg(target_os = "linux")]
 pub use linux::LinuxNotifier;
+#[cfg(target_os = "macos")]
 pub use macos::MacNotifier;
 
 /// What to show when a track starts.
@@ -29,7 +31,7 @@ pub fn platform_notifier() -> Box<dyn Notifier> {
     {
         Box::new(LinuxNotifier)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
     {
         Box::new(MacNotifier::from_env())
     }

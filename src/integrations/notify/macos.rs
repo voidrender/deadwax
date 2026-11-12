@@ -57,7 +57,6 @@ impl Notifier for MacNotifier {
 }
 
 impl MacNotifier {
-    #[cfg(target_os = "macos")]
     fn launch(&self, n: &TrackNotification) -> anyhow::Result<()> {
         let mut child = std::process::Command::new("open")
             .args(["-n", "-g", "-a"])
@@ -71,11 +70,6 @@ impl MacNotifier {
             let _ = child.wait();
         });
         Ok(())
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    fn launch(&self, _n: &TrackNotification) -> anyhow::Result<()> {
-        bail!("macOS notifications are unavailable on this platform")
     }
 }
 
