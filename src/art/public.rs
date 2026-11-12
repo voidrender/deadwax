@@ -48,8 +48,16 @@ pub struct PublicArtResolver {
 
 impl PublicArtResolver {
     pub fn new(endpoints: Endpoints, cache_path: PathBuf) -> Self {
+        Self::with_timeout(endpoints, cache_path, Duration::from_secs(5))
+    }
+
+    pub(crate) fn with_timeout(
+        endpoints: Endpoints,
+        cache_path: PathBuf,
+        timeout: Duration,
+    ) -> Self {
         let http = reqwest::Client::builder()
-            .timeout(Duration::from_secs(5))
+            .timeout(timeout)
             .user_agent(concat!("senritsu/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("static reqwest client config is valid");
@@ -128,7 +136,7 @@ impl PublicArtResolver {
         let url = format!("{}/release/{mbid}/front-500", self.endpoints.caa);
         match self.http.head(url).send().await {
             Ok(r) if r.status().is_success() => Step::Hit(r.url().to_string()),
-            Ok(r) if r.status().is_server_error() => Step::Failed,
+            Ok(r) if is_transient(r.status()) => Step::Failed,
             Ok(_) => Step::Miss,
             Err(_) => Step::Failed,
         }
@@ -142,13 +150,15 @@ impl PublicArtResolver {
             .send()
             .await
             .map_err(|_| Step::Failed)?;
-        if resp.status().is_server_error() {
+        if is_transient(resp.status()) {
             return Err(Step::Failed);
         }
         if !resp.status().is_success() {
             return Err(Step::Miss);
         }
-        resp.json().await.map_err(|_| Step::Miss)
+        // A failed body read is transient; a body that is not JSON is a definitive miss.
+        let bytes = resp.bytes().await.map_err(|_| Step::Failed)?;
+        serde_json::from_slice(&bytes).map_err(|_| Step::Miss)
     }
 
     async fn itunes(&self, q: &ArtQuery) -> Step {
@@ -198,6 +208,12 @@ impl PublicArtResolver {
             .map(str::to_string);
         found.map_or(Step::Miss, Step::Hit)
     }
+}
+
+/// Statuses that mean "try again later" rather than "no such album".
+/// iTunes answers 403 when it throttles.
+fn is_transient(status: reqwest::StatusCode) -> bool {
+    status.is_server_error() || matches!(status.as_u16(), 403 | 408 | 429)
 }
 
 fn first_match<'a>(
@@ -427,6 +443,83 @@ mod tests {
             .await;
         let r2 = PublicArtResolver::new(eps(&s), cache);
         assert!(r2.resolve(&q("A", "B", Some("mb-9"))).await.is_some());
+    }
+
+    #[tokio::test]
+    async fn throttled_itunes_is_not_cached() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(ResponseTemplate::new(429))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search/album"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"data": []})))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let r = PublicArtResolver::new(eps(&s), dir.path().join("pub.json"));
+        assert_eq!(r.resolve(&q("A", "B", None)).await, None);
+        let first = requests(&s).await;
+        assert_eq!(r.resolve(&q("A", "B", None)).await, None);
+        assert!(requests(&s).await > first, "second resolve must retry");
+    }
+
+    #[tokio::test]
+    async fn caa_404_falls_through_and_is_cached() {
+        let s = MockServer::start().await;
+        Mock::given(method("HEAD"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({"results": []})),
+            )
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search/album"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let r = PublicArtResolver::new(eps(&s), dir.path().join("pub.json"));
+        assert_eq!(r.resolve(&q("A", "B", Some("mb-2"))).await, None);
+        let first = requests(&s).await;
+        assert_eq!(r.resolve(&q("A", "B", Some("mb-2"))).await, None);
+        assert_eq!(requests(&s).await, first);
+    }
+
+    #[tokio::test]
+    async fn slow_response_is_not_cached() {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/search"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(itunes_body("A", "B"))
+                    .set_delay(Duration::from_millis(500)),
+            )
+            .mount(&s)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/search/album"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&s)
+            .await;
+        let dir = tempfile::tempdir().unwrap();
+        let r = PublicArtResolver::with_timeout(
+            eps(&s),
+            dir.path().join("pub.json"),
+            Duration::from_millis(100),
+        );
+        assert_eq!(r.resolve(&q("A", "B", None)).await, None);
+        let first = requests(&s).await;
+        assert_eq!(r.resolve(&q("A", "B", None)).await, None);
+        assert!(requests(&s).await > first, "timeout must not be cached");
     }
 
     #[test]
