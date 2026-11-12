@@ -136,12 +136,15 @@ impl<S: SecretBackend> CredentialStore<S> {
     }
 
     /// Deletes the keychain entry and the token file. Succeeds when nothing is stored.
+    /// Both are always attempted, so a keychain failure never leaves the file
+    /// behind. The first error is returned.
     pub fn clear(&self, server_url: &str, username: &str) -> anyhow::Result<()> {
-        match self.secrets.delete(&account(server_url, username)) {
-            Ok(()) | Err(SecretError::Unavailable(_)) => {}
-            Err(e) => return Err(e.into()),
-        }
-        self.remove_file()
+        let keychain = match self.secrets.delete(&account(server_url, username)) {
+            Ok(()) | Err(SecretError::Unavailable(_)) => Ok(()),
+            Err(e) => Err(anyhow::Error::from(e)),
+        };
+        let file = self.remove_file();
+        keychain.and(file)
     }
 
     fn remove_file(&self) -> anyhow::Result<()> {
@@ -268,6 +271,28 @@ mod tests {
         assert!(!s.file_path.exists());
         assert!(s.load(URL, "me").unwrap().is_none());
         s.clear(URL, "me").unwrap();
+    }
+
+    #[test]
+    fn clear_removes_the_file_even_when_keychain_delete_fails() {
+        struct FailingDelete;
+        impl SecretBackend for FailingDelete {
+            fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+                Ok(None)
+            }
+            fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+                Ok(())
+            }
+            fn delete(&self, _: &str) -> Result<(), SecretError> {
+                Err(SecretError::Other("denied".into()))
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("credentials.toml");
+        std::fs::write(&path, "salt = \"a\"\ntoken = \"b\"\n").unwrap();
+        let s = CredentialStore::new(FailingDelete, path.clone());
+        assert!(s.clear(URL, "me").is_err());
+        assert!(!path.exists());
     }
 
     #[test]
