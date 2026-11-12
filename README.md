@@ -87,7 +87,7 @@ image_protocol = "kitty"
 
 ## Discord presence
 
-Discord presence works out of the box. While a track plays, Discord shows "Listening to Senritsu" with the track, artist, album, and cover. The Discord desktop app must be running on the same machine. Set `discord = false` in `config.toml` to turn it off.
+Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Senritsu" with the track, artist, album, and cover. The Discord desktop app must be running on the same machine. Set `discord = false` in `config.toml` to turn it off.
 
 To show presence under a different name or default image, use your own Discord application:
 

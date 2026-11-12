@@ -2,7 +2,9 @@
 
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use discord_rich_presence::activity::{Activity, ActivityType, Assets, Timestamps};
+use discord_rich_presence::activity::{
+    Activity, ActivityType, Assets, StatusDisplayType, Timestamps,
+};
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use tokio::sync::mpsc;
 
@@ -60,7 +62,7 @@ pub fn build_activity(info: &PresenceInfo, default_image: &str, now_unix: i64) -
     };
     ActivitySpec {
         details: fit(&info.title),
-        state: fit(&format!("by {}", info.artist)),
+        state: fit(&info.artist),
         large_image: match info.image_url.as_deref() {
             Some(url) if url.len() <= MAX_IMAGE_URL_BYTES => url.to_string(),
             _ => fit(default_image),
@@ -142,6 +144,8 @@ impl Worker {
         client.set_activity(
             Activity::new()
                 .activity_type(ActivityType::Listening)
+                // The member list shows the artist instead of the app name.
+                .status_display_type(StatusDisplayType::State)
                 .details(&spec.details)
                 .state(&spec.state)
                 .timestamps(ts)
@@ -247,7 +251,7 @@ mod tests {
         assert_eq!(a.start_ts, 970);
         assert_eq!(a.end_ts, Some(1170));
         assert_eq!(a.details, "Song");
-        assert_eq!(a.state, "by Artist");
+        assert_eq!(a.state, "Artist");
         assert_eq!(a.large_image, "https://art.example/c.jpg");
         assert_eq!(a.large_text, "Album");
     }
