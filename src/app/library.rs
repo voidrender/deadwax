@@ -418,6 +418,7 @@ impl App {
         }
         match self.view {
             View::Library => self.library.focused_song(),
+            View::Search => self.search.selected_song(),
             _ => None,
         }
     }
@@ -434,7 +435,7 @@ impl App {
         }
         let starred = !previous;
         self.pending_stars.insert(song_id.clone(), previous);
-        self.library.set_starred(&song_id, starred);
+        self.set_starred_everywhere(&song_id, starred);
         vec![Effect::ToggleStar { song_id, starred }]
     }
 
@@ -466,14 +467,14 @@ impl App {
                 match result {
                     Ok(()) => {
                         // Re-apply in case the tracks were reloaded meanwhile.
-                        self.library.set_starred(&song_id, starred);
+                        self.set_starred_everywhere(&song_id, starred);
                         vec![Effect::Player(PlayerCommand::SetStarred {
                             song_id,
                             starred,
                         })]
                     }
                     Err(msg) => {
-                        self.library.set_starred(&song_id, previous);
+                        self.set_starred_everywhere(&song_id, previous);
                         self.set_status(format!("Couldn't update favorite: {msg}"));
                         Vec::new()
                     }
@@ -503,6 +504,11 @@ impl App {
             },
             _ => Vec::new(),
         }
+    }
+
+    fn set_starred_everywhere(&mut self, song_id: &str, starred: bool) {
+        self.library.set_starred(song_id, starred);
+        self.search.set_starred(song_id, starred);
     }
 
     fn finish_load(&mut self, what: &str, applied: Result<Vec<Effect>, String>) -> Vec<Effect> {

@@ -131,7 +131,7 @@ fn draw_rows(frame: &mut Frame, area: Rect, rows: &[(String, String)], sel: usiz
 
 /// Pads `left` and `right` to exactly `width` characters, truncating `left`
 /// with an ellipsis when they do not fit.
-fn fit(left: &str, right: &str, width: usize) -> String {
+pub(super) fn fit(left: &str, right: &str, width: usize) -> String {
     let right_len = right.chars().count();
     let room = if right_len == 0 {
         width

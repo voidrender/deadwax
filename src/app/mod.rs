@@ -1,15 +1,17 @@
 pub mod keys;
 pub mod library;
 pub mod login;
+pub mod search;
 
 use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
-use crate::subsonic::{Album, Artist, Song, SubsonicClient};
+use crate::subsonic::{Album, Artist, SearchResults, Song, SubsonicClient};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use image::DynamicImage;
 use keys::{Action, SEEK_STEP, VOLUME_STEP};
 use library::{LibraryState, RANDOM_COUNT};
 use login::{LoginField, LoginState};
+use search::SearchState;
 use std::time::{Duration, Instant};
 
 /// Shown after a login that fell back to the credentials file.
@@ -90,6 +92,10 @@ pub enum ApiResult {
         next: bool,
         result: Result<Vec<Song>, String>,
     },
+    Search {
+        seq: u64,
+        result: Result<SearchResults, String>,
+    },
 }
 
 impl std::fmt::Debug for ApiResult {
@@ -128,6 +134,11 @@ impl std::fmt::Debug for ApiResult {
             Self::AlbumQueued { next, result } => f
                 .debug_struct("AlbumQueued")
                 .field("next", next)
+                .field("result", result)
+                .finish(),
+            Self::Search { seq, result } => f
+                .debug_struct("Search")
+                .field("seq", seq)
                 .field("result", result)
                 .finish(),
         }
@@ -172,6 +183,11 @@ pub enum Effect {
     },
     AppendAlbum(String),
     PlayNextAlbum(String),
+    /// The runtime waits out the debounce, then drops it if `seq` is stale.
+    Search {
+        query: String,
+        seq: u64,
+    },
 }
 
 impl std::fmt::Debug for Effect {
@@ -201,6 +217,11 @@ impl std::fmt::Debug for Effect {
                 .finish(),
             Self::AppendAlbum(id) => f.debug_tuple("AppendAlbum").field(id).finish(),
             Self::PlayNextAlbum(id) => f.debug_tuple("PlayNextAlbum").field(id).finish(),
+            Self::Search { query, seq } => f
+                .debug_struct("Search")
+                .field("query", query)
+                .field("seq", seq)
+                .finish(),
         }
     }
 }
@@ -213,6 +234,7 @@ pub struct App {
     pub server: String,
     pub view: View,
     pub library: LibraryState,
+    pub search: SearchState,
     /// Songs with a star toggle in flight, mapped to their value before it.
     pub pending_stars: std::collections::HashMap<String, bool>,
     pub now_playing: bool,
@@ -258,6 +280,7 @@ impl App {
         self.help = false;
         self.popup = None;
         self.library = LibraryState::default();
+        self.search = SearchState::default();
         self.pending_stars.clear();
         self.login = LoginState {
             server: server.to_string(),
@@ -327,6 +350,7 @@ impl App {
                     self.set_long_status(FILE_CREDENTIALS_NOTICE);
                 }
                 self.library = LibraryState::default();
+                self.search = SearchState::default();
                 return self.library.start();
             }
             ApiResult::LoginFailed(msg) => {
@@ -340,6 +364,7 @@ impl App {
                     self.login.warning = Some(msg);
                 }
             }
+            r @ ApiResult::Search { .. } => self.handle_search_result(r),
             other => return self.handle_library_result(other),
         }
         Vec::new()
@@ -355,6 +380,9 @@ impl App {
         if self.screen == Screen::Login {
             return self.login.handle_key(key);
         }
+        if self.screen == Screen::Main && self.view == View::Search && self.search.editing {
+            return self.search.handle_edit_key(key);
+        }
         match keys::global_action(&key) {
             Some(action) => self.run_action(action),
             // Global keys act through the help overlay. Any other key,
@@ -368,6 +396,12 @@ impl App {
                 && !self.now_playing =>
             {
                 self.library.handle_key(key)
+            }
+            None if self.screen == Screen::Main
+                && self.view == View::Search
+                && !self.now_playing =>
+            {
+                self.handle_search_key(key)
             }
             None => Vec::new(),
         }
@@ -394,6 +428,13 @@ impl App {
             Action::ShowView(view) => {
                 self.view = view;
                 self.now_playing = false;
+                return Vec::new();
+            }
+            Action::FocusSearch => {
+                self.view = View::Search;
+                self.now_playing = false;
+                self.help = false;
+                self.search.editing = true;
                 return Vec::new();
             }
             Action::ToggleNowPlaying => {

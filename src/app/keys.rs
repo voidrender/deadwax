@@ -5,6 +5,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action {
     ShowView(View),
+    FocusSearch,
     ToggleNowPlaying,
     ToggleHelp,
     Quit,
@@ -47,6 +48,7 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
         '2' => Action::ShowView(View::Playlists),
         '3' => Action::ShowView(View::Search),
         '4' => Action::ShowView(View::Queue),
+        '/' => Action::FocusSearch,
         'z' => Action::ToggleNowPlaying,
         '?' => Action::ToggleHelp,
         'q' => Action::Quit,
@@ -69,6 +71,7 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
 /// Rows for the help overlay: key label and what it does.
 pub const HELP: &[(&str, &str)] = &[
     ("1 2 3 4", "Library, Playlists, Search, Queue"),
+    ("/", "Search"),
     ("z", "Toggle Now Playing"),
     ("space", "Play / pause"),
     (". ,", "Next / previous track"),

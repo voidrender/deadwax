@@ -1,6 +1,7 @@
 pub mod help;
 pub mod library;
 pub mod login;
+pub mod search;
 pub mod strip;
 pub mod theme;
 pub mod widgets;
@@ -42,6 +43,8 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
     frame.render_widget(block, main);
     if !app.now_playing && app.view == View::Library {
         library::draw(frame, inner, &app.library);
+    } else if !app.now_playing && app.view == View::Search {
+        search::draw(frame, inner, &app.search);
     }
     strip::draw(frame, strip_area, app);
 }

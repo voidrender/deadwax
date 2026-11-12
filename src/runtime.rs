@@ -1,4 +1,5 @@
 use crate::app::login::login_error_message;
+use crate::app::search::SEARCH_LIMIT;
 use crate::app::{ApiResult, App, AppEvent, Effect};
 use crate::config::Config;
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
@@ -12,7 +13,7 @@ use ratatui::Terminal;
 use ratatui::backend::Backend;
 use std::future::Future;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
@@ -41,6 +42,8 @@ fn check_panicked() -> anyhow::Result<()> {
 }
 
 const TICK: Duration = Duration::from_millis(250);
+/// How long a search waits for further typing before it goes out.
+const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// How long quitting waits for the engine to stop mpv.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
@@ -85,6 +88,8 @@ pub struct Ctx {
     pub rx: mpsc::UnboundedReceiver<AppEvent>,
     pub snapshot: watch::Receiver<PlayerSnapshot>,
     pub engine_events: mpsc::UnboundedReceiver<EngineEvent>,
+    /// Sequence of the newest search effect, so superseded ones can be dropped.
+    pub latest_search: Arc<AtomicU64>,
 }
 
 impl Ctx {
@@ -104,6 +109,7 @@ impl Ctx {
             rx,
             snapshot,
             engine_events,
+            latest_search: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -261,6 +267,26 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                     result,
                 },
             );
+        }
+        Effect::Search { query, seq } => {
+            ctx.latest_search.store(seq, Ordering::SeqCst);
+            let latest = Arc::clone(&ctx.latest_search);
+            let client = current_client(&ctx.client);
+            let tx = ctx.tx.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(SEARCH_DEBOUNCE).await;
+                if latest.load(Ordering::SeqCst) != seq {
+                    return;
+                }
+                let result = match client {
+                    Some(c) => c
+                        .search(&query, SEARCH_LIMIT)
+                        .await
+                        .map_err(|e| e.to_string()),
+                    None => Err(NOT_LOGGED_IN.to_string()),
+                };
+                let _ = tx.send(AppEvent::Api(ApiResult::Search { seq, result }));
+            });
         }
         Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),
         Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, id, true),
