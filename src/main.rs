@@ -20,8 +20,36 @@ const MPV_MISSING: &str =
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
+const USAGE: &str = "\
+A terminal music player for Navidrome and other Subsonic servers.
+
+Usage: senritsu [OPTIONS]
+
+Options:
+  -h, --help     Print this help
+  -V, --version  Print the version
+
+Run without options to start the player. Press ? inside it for keys.";
+
 #[tokio::main]
 async fn main() -> ExitCode {
+    if let Some(arg) = std::env::args().nth(1) {
+        return match arg.as_str() {
+            "-V" | "--version" => {
+                println!("senritsu {}", env!("CARGO_PKG_VERSION"));
+                ExitCode::SUCCESS
+            }
+            "-h" | "--help" => {
+                println!("{USAGE}");
+                ExitCode::SUCCESS
+            }
+            _ => {
+                eprintln!("senritsu: unknown option '{arg}'\n\n{USAGE}");
+                ExitCode::from(2)
+            }
+        };
+    }
+
     let _guard = logging::init(&paths::cache_dir());
 
     if !mpv_available() {
