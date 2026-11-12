@@ -53,26 +53,30 @@ fn ensure_installed(app_path: &Path) -> anyhow::Result<()> {
 impl Notifier for MacNotifier {
     fn notify(&self, n: &TrackNotification) -> anyhow::Result<()> {
         ensure_installed(&self.app_path)?;
-        #[cfg(target_os = "macos")]
-        {
-            let mut child = std::process::Command::new("open")
-                .args(["-n", "-g", "-a"])
-                .arg(&self.app_path)
-                .arg("--args")
-                .args(helper_args(n))
-                .spawn()
-                .map_err(|e| anyhow::anyhow!("failed to run open: {e}"))?;
-            // `open` returns quickly; reap it off-thread so no zombie remains.
-            std::thread::spawn(move || {
-                let _ = child.wait();
-            });
-        }
-        #[cfg(not(target_os = "macos"))]
-        {
-            let _ = n;
-            bail!("macOS notifications are unavailable on this platform");
-        }
+        self.launch(n)
+    }
+}
+
+impl MacNotifier {
+    #[cfg(target_os = "macos")]
+    fn launch(&self, n: &TrackNotification) -> anyhow::Result<()> {
+        let mut child = std::process::Command::new("open")
+            .args(["-n", "-g", "-a"])
+            .arg(&self.app_path)
+            .arg("--args")
+            .args(helper_args(n))
+            .spawn()
+            .map_err(|e| anyhow::anyhow!("failed to run open: {e}"))?;
+        // `open` returns quickly; reap it off-thread so no zombie remains.
+        std::thread::spawn(move || {
+            let _ = child.wait();
+        });
         Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    fn launch(&self, _n: &TrackNotification) -> anyhow::Result<()> {
+        bail!("macOS notifications are unavailable on this platform")
     }
 }
 
