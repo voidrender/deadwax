@@ -149,14 +149,19 @@ fn tabs_line(active: View, now_playing: bool) -> Line<'static> {
 }
 
 pub(super) fn modes_line(snap: &PlayerSnapshot) -> Line<'static> {
-    let mut spans = Vec::new();
+    let mut labels = Vec::new();
     if snap.shuffle {
-        spans.push(Span::raw("🔀 "));
+        labels.push("shuffle");
     }
     match snap.repeat {
         RepeatMode::Off => {}
-        RepeatMode::All => spans.push(Span::raw("🔁 ")),
-        RepeatMode::One => spans.push(Span::raw("🔂 ")),
+        RepeatMode::All => labels.push("repeat all"),
+        RepeatMode::One => labels.push("repeat one"),
+    }
+    let mut spans = Vec::new();
+    for label in labels {
+        spans.push(Span::styled(label, theme::accent()));
+        spans.push(Span::styled(" · ", theme::dim()));
     }
     spans.push(Span::styled(
         format!("vol {}%", snap.volume),
@@ -217,6 +222,26 @@ mod tests {
         assert_eq!(rows[2][end - 1], '%', "{text}");
         // Equal space on both sides, give or take a column.
         assert!(start.abs_diff(200 - end) <= 1, "{start} {end}\n{text}");
+    }
+
+    #[test]
+    fn modes_are_words() {
+        let text = |snap: &PlayerSnapshot| {
+            modes_line(snap)
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        let mut s = snap();
+        s.volume = 80;
+        assert_eq!(text(&s), "vol 80%");
+        s.shuffle = true;
+        s.repeat = RepeatMode::All;
+        assert_eq!(text(&s), "shuffle · repeat all · vol 80%");
+        s.shuffle = false;
+        s.repeat = RepeatMode::One;
+        assert_eq!(text(&s), "repeat one · vol 80%");
     }
 
     #[test]
