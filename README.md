@@ -73,7 +73,7 @@ To show presence under a different name or default image, use your own Discord a
 
 1. Open the [Discord developer portal](https://discord.com/developers/applications) and create a new application. Discord shows its name after "Listening to".
 2. Copy the Application ID from the General Information page into `discord_app_id` in `config.toml`.
-3. Under Rich Presence, upload an art asset named `senritsu` (or whatever you set in `discord_default_image`). Senritsu shows it when it cannot find a public cover for the album.
+3. Under Rich Presence, upload an art asset named `senritsu` (or whatever you set in `discord_default_image`). Senritsu shows it when it cannot find a public cover for the album. `assets/icon/senritsu-discord-1024.png` is the Senritsu icon sized for this.
 4. Restart Senritsu.
 
 Discord only ever receives public cover art URLs, found by looking up the album on the Cover Art Archive, iTunes, and Deezer. Your Navidrome server's address, username, and credentials are never sent to Discord or to those lookup services. Lookups use only the artist and album names (or the MusicBrainz release ID when your library has one). Results are cached in `public_art.json`.
