@@ -434,7 +434,8 @@ impl App {
         }
     }
 
-    /// Optimistically flips the star on the selected song.
+    /// Optimistically flips the star on the selected song. The engine gets
+    /// the flip too, so its next snapshot does not undo it.
     pub(super) fn toggle_star(&mut self) -> Vec<Effect> {
         let Some(song) = self.selected_song() else {
             return Vec::new();
@@ -447,7 +448,13 @@ impl App {
         let starred = !previous;
         self.pending_stars.insert(song_id.clone(), previous);
         self.set_starred_everywhere(&song_id, starred);
-        vec![Effect::ToggleStar { song_id, starred }]
+        vec![
+            Effect::ToggleStar {
+                song_id: song_id.clone(),
+                starred,
+            },
+            Effect::Player(PlayerCommand::SetStarred { song_id, starred }),
+        ]
     }
 
     /// Handles the library's API results. Anything else is left alone.
@@ -487,7 +494,10 @@ impl App {
                     Err(msg) => {
                         self.set_starred_everywhere(&song_id, previous);
                         self.set_status(format!("Couldn't update favorite: {msg}"));
-                        Vec::new()
+                        vec![Effect::Player(PlayerCommand::SetStarred {
+                            song_id,
+                            starred: previous,
+                        })]
                     }
                 }
             }
@@ -707,10 +717,16 @@ mod tests {
         let fx = press(&mut app, 'f');
         assert_eq!(
             fx,
-            [Effect::ToggleStar {
-                song_id: "s0".into(),
-                starred: true
-            }]
+            [
+                Effect::ToggleStar {
+                    song_id: "s0".into(),
+                    starred: true,
+                },
+                Effect::Player(crate::player::PlayerCommand::SetStarred {
+                    song_id: "s0".into(),
+                    starred: true,
+                }),
+            ]
         );
         assert!(app.library.tracks.loaded().unwrap()[0].starred);
 
@@ -738,7 +754,14 @@ mod tests {
                 result: Err("timeout".into()),
             },
         );
-        assert!(fx.is_empty());
+        // The engine got the flip up front, so it gets the revert too.
+        assert_eq!(
+            fx,
+            [Effect::Player(PlayerCommand::SetStarred {
+                song_id: "s0".into(),
+                starred: false
+            })]
+        );
         assert!(!app.library.tracks.loaded().unwrap()[0].starred);
         assert!(app.status_text().unwrap().contains("timeout"));
     }
@@ -755,11 +778,11 @@ mod tests {
     fn rapid_presses_send_one_toggle() {
         let mut app = loaded_app();
         app.library.focus = Column::Tracks;
-        assert_eq!(press(&mut app, 'f').len(), 1);
+        assert_eq!(press(&mut app, 'f').len(), 2);
         assert!(press(&mut app, 'f').is_empty());
         assert!(app.library.tracks.loaded().unwrap()[0].starred);
         api(&mut app, starred_result("s0", true, true));
-        assert_eq!(press(&mut app, 'f').len(), 1);
+        assert_eq!(press(&mut app, 'f').len(), 2);
     }
 
     #[test]

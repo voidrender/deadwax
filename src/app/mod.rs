@@ -1076,10 +1076,16 @@ mod tests {
         app.now_playing = true;
         assert_eq!(
             press(&mut app, 'f'),
-            [Effect::ToggleStar {
-                song_id: "cur".into(),
-                starred: true,
-            }]
+            [
+                Effect::ToggleStar {
+                    song_id: "cur".into(),
+                    starred: true,
+                },
+                Effect::Player(crate::player::PlayerCommand::SetStarred {
+                    song_id: "cur".into(),
+                    starred: true,
+                }),
+            ]
         );
         assert!(app.player.items[0].song.starred);
     }

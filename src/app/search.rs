@@ -539,10 +539,16 @@ mod tests {
         );
         assert_eq!(
             press(&mut app, 'f'),
-            [Effect::ToggleStar {
-                song_id: "s1".into(),
-                starred: true
-            }]
+            [
+                Effect::ToggleStar {
+                    song_id: "s1".into(),
+                    starred: true,
+                },
+                Effect::Player(crate::player::PlayerCommand::SetStarred {
+                    song_id: "s1".into(),
+                    starred: true,
+                }),
+            ]
         );
         let loaded = app.search.results.loaded().unwrap();
         assert!(loaded.songs[0].starred);

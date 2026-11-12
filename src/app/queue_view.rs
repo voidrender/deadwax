@@ -286,10 +286,16 @@ mod tests {
         let mut app = app_with(&[1, 2]);
         assert_eq!(
             press(&mut app, 'f'),
-            [Effect::ToggleStar {
-                song_id: "1".into(),
-                starred: true
-            }]
+            [
+                Effect::ToggleStar {
+                    song_id: "1".into(),
+                    starred: true,
+                },
+                Effect::Player(crate::player::PlayerCommand::SetStarred {
+                    song_id: "1".into(),
+                    starred: true,
+                }),
+            ]
         );
         app.handle_event(AppEvent::Api(crate::app::ApiResult::Starred {
             song_id: "1".into(),
@@ -299,10 +305,16 @@ mod tests {
         assert!(app.player.items[0].song.starred);
         assert_eq!(
             press(&mut app, 'f'),
-            [Effect::ToggleStar {
-                song_id: "1".into(),
-                starred: false
-            }]
+            [
+                Effect::ToggleStar {
+                    song_id: "1".into(),
+                    starred: false,
+                },
+                Effect::Player(crate::player::PlayerCommand::SetStarred {
+                    song_id: "1".into(),
+                    starred: false,
+                }),
+            ]
         );
     }
 
@@ -312,10 +324,16 @@ mod tests {
         press(&mut app, 'j');
         assert_eq!(
             press(&mut app, 'f'),
-            [Effect::ToggleStar {
-                song_id: "2".into(),
-                starred: true
-            }]
+            [
+                Effect::ToggleStar {
+                    song_id: "2".into(),
+                    starred: true,
+                },
+                Effect::Player(crate::player::PlayerCommand::SetStarred {
+                    song_id: "2".into(),
+                    starred: true,
+                }),
+            ]
         );
         assert_eq!(app.add_to_playlist_targets(), ["2"]);
     }
