@@ -39,8 +39,8 @@ pub fn draw(frame: &mut Frame, area: Rect, pl: &PlaylistsState) {
 fn draw_column(frame: &mut Frame, area: Rect, pl: &PlaylistsState, col: PlColumn) {
     let focused = pl.focus == col;
     let title = match col {
-        PlColumn::Lists => "Playlists",
-        PlColumn::Tracks => "Tracks",
+        PlColumn::Lists => format!("Playlists · {}", pl.list_sort.label()),
+        PlColumn::Tracks => "Tracks".to_string(),
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)

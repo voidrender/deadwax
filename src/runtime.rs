@@ -1,6 +1,7 @@
 use crate::app::login::login_error_message;
 use crate::app::playlists::songs_label;
 use crate::app::search::SEARCH_LIMIT;
+use crate::app::sort::Sorts;
 use crate::app::{ApiResult, App, AppEvent, Effect};
 use crate::art::{ArtQuery, CoverCache, Endpoints, PublicArtResolver};
 use crate::config::Config;
@@ -120,6 +121,8 @@ pub struct Ctx {
     hub: Option<mpsc::UnboundedSender<(EngineEvent, i64)>>,
     /// Where the queue is saved. `None` turns saving and restoring off.
     state_path: Option<PathBuf>,
+    /// Where the sort orders are saved. `None` turns saving off.
+    sorts_path: Option<PathBuf>,
 }
 
 impl Ctx {
@@ -146,6 +149,7 @@ impl Ctx {
             session: Arc::new(AtomicU64::new(0)),
             hub: None,
             state_path: None,
+            sorts_path: None,
         }
     }
 }
@@ -171,6 +175,9 @@ where
             ctx.tx.clone(),
         ));
     }
+    let sorts_path = paths::data_dir().join("sorts.json");
+    app.set_sorts(Sorts::load(&sorts_path));
+    ctx.sorts_path = Some(sorts_path);
     let services = start_services(&mut ctx);
     let result = event_loop(terminal, app, &mut ctx, EventStream::new()).await;
     shutdown_engine(&mut ctx).await;
@@ -415,6 +422,14 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                     };
                     app.handle_event(AppEvent::Api(result));
                 }
+            }
+        }
+        // A few bytes, written in order so the last press wins.
+        Effect::SaveSorts(sorts) => {
+            if let Some(path) = &ctx.sorts_path
+                && let Err(e) = sorts.save(path)
+            {
+                tracing::warn!("saving sort orders failed: {e:#}");
             }
         }
         Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),

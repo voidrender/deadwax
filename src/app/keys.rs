@@ -22,6 +22,7 @@ pub enum Action {
     ToggleStar,
     AddToPlaylist,
     PlayRandom,
+    CycleSort,
 }
 
 /// Seconds moved by `]` and `[`.
@@ -66,6 +67,7 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
         'R' => Action::PlayRandom,
         'f' => Action::ToggleStar,
         'a' => Action::AddToPlaylist,
+        'o' => Action::CycleSort,
         _ => return None,
     })
 }
@@ -84,6 +86,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("R", "Play 200 random songs"),
     ("f", "Toggle favorite on selected song"),
     ("a", "Add selected song(s) to a playlist"),
+    ("o", "Change the sort order of the list"),
     ("n i D", "New / rename / delete playlist"),
     ("d J K", "Remove / move track in a playlist"),
     ("j k h l", "Move in lists and columns"),

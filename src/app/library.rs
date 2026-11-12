@@ -1,7 +1,9 @@
+use super::sort::{self, AlbumSort, ArtistSort, TrackSort};
 use super::{ApiResult, App, Effect, Screen, View};
 use crate::player::PlayerCommand;
 use crate::subsonic::{Album, Artist, Song};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 
 /// Id of the synthetic album that holds the starred songs.
 pub const FAVORITES_ID: &str = "senritsu:favorites";
@@ -84,6 +86,13 @@ pub struct LibraryState {
     pub tracks_for: Option<String>,
     /// Album to select once the revealed artist's albums arrive.
     pending_album: Option<String>,
+    pub artist_sort: ArtistSort,
+    pub album_sort: AlbumSort,
+    pub track_sort: TrackSort,
+    /// Server order of the loaded artists and tracks, for sorts that fall
+    /// back to it.
+    artist_ranks: HashMap<String, usize>,
+    track_ranks: HashMap<String, usize>,
 }
 
 fn favorites_album() -> Album {
@@ -210,9 +219,11 @@ impl LibraryState {
         }
         match result {
             Ok(artists) => {
-                let rows = std::iter::once(ArtistRow::Favorites)
+                let mut rows: Vec<ArtistRow> = std::iter::once(ArtistRow::Favorites)
                     .chain(artists.into_iter().map(ArtistRow::Artist))
                     .collect();
+                self.artist_ranks = sort::rank(rows.iter().map(ArtistRow::id));
+                sort::sort_artists(&mut rows, self.artist_sort, &self.artist_ranks);
                 self.artists = Loadable::Loaded(rows);
                 self.sel[0] = 0;
                 Ok(self.select_artist())
@@ -234,7 +245,8 @@ impl LibraryState {
             return Ok(Vec::new());
         }
         match result {
-            Ok(albums) => {
+            Ok(mut albums) => {
+                sort::sort_albums(&mut albums, self.album_sort);
                 if let Some(want) = self.pending_album.take()
                     && let Some(i) = albums.iter().position(|a| a.id == want)
                 {
@@ -260,7 +272,9 @@ impl LibraryState {
             return Ok(());
         }
         match result {
-            Ok(songs) => {
+            Ok(mut songs) => {
+                self.track_ranks = sort::rank(songs.iter().map(|s| s.id.as_str()));
+                sort::sort_tracks(&mut songs, self.track_sort, &self.track_ranks);
                 self.tracks = Loadable::Loaded(songs);
                 Ok(())
             }
@@ -275,6 +289,38 @@ impl LibraryState {
         if let Loadable::Loaded(songs) = &mut self.tracks {
             for s in songs.iter_mut().filter(|s| s.id == song_id) {
                 s.starred = starred;
+            }
+        }
+    }
+
+    /// Moves the focused column to its next sort order. The selected row
+    /// stays selected, so nothing reloads.
+    pub fn cycle_sort(&mut self) {
+        let col = self.focus.index();
+        match self.focus {
+            Column::Artists => {
+                self.artist_sort = self.artist_sort.next();
+                if let Loadable::Loaded(rows) = &mut self.artists {
+                    let keep = rows.get(self.sel[col]).map(|r| r.id().to_string());
+                    sort::sort_artists(rows, self.artist_sort, &self.artist_ranks);
+                    self.sel[col] = position(rows, keep.as_deref(), ArtistRow::id);
+                }
+            }
+            Column::Albums => {
+                self.album_sort = self.album_sort.next();
+                if let Loadable::Loaded(albums) = &mut self.albums {
+                    let keep = albums.get(self.sel[col]).map(|a| a.id.clone());
+                    sort::sort_albums(albums, self.album_sort);
+                    self.sel[col] = position(albums, keep.as_deref(), |a| &a.id);
+                }
+            }
+            Column::Tracks => {
+                self.track_sort = self.track_sort.next();
+                if let Loadable::Loaded(songs) = &mut self.tracks {
+                    let keep = songs.get(self.sel[col]).map(|s| s.id.clone());
+                    sort::sort_tracks(songs, self.track_sort, &self.track_ranks);
+                    self.sel[col] = position(songs, keep.as_deref(), |s| &s.id);
+                }
             }
         }
     }
@@ -399,6 +445,12 @@ impl LibraryState {
             }
         }
     }
+}
+
+/// Where the row with `id` landed, or the top when it is gone.
+pub(super) fn position<T>(items: &[T], id: Option<&str>, id_of: impl Fn(&T) -> &str) -> usize {
+    id.and_then(|id| items.iter().position(|i| id_of(i) == id))
+        .unwrap_or(0)
 }
 
 impl App {
@@ -550,6 +602,7 @@ impl App {
 mod tests {
     use super::*;
     use crate::app::AppEvent;
+    use crate::app::sort::Sorts;
 
     fn press(app: &mut App, c: char) -> Vec<Effect> {
         key(app, KeyCode::Char(c))
@@ -938,5 +991,90 @@ mod tests {
         );
         assert_eq!(app.library.sel[1], 1);
         assert_eq!(app.library.tracks_for.as_deref(), Some("b2"));
+    }
+
+    fn dated(id: &str, year: u32) -> Album {
+        Album {
+            year: Some(year),
+            ..album(id)
+        }
+    }
+
+    fn album_ids(app: &App) -> Vec<&str> {
+        app.library
+            .albums
+            .loaded()
+            .unwrap()
+            .iter()
+            .map(|a| a.id.as_str())
+            .collect()
+    }
+
+    /// One artist with albums from 2000 and 2010, newest selected.
+    fn dated_app() -> App {
+        let mut app = App::logged_in("s");
+        app.on_start();
+        api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
+        press(&mut app, 'j');
+        let fx = api(
+            &mut app,
+            ApiResult::Artist {
+                id: "a".into(),
+                result: Ok(vec![dated("x", 2000), dated("y", 2010)]),
+            },
+        );
+        assert_eq!(fx, [Effect::LoadAlbum("y".into())]);
+        app
+    }
+
+    #[test]
+    fn albums_arrive_newest_first() {
+        let app = dated_app();
+        assert_eq!(album_ids(&app), ["y", "x"]);
+        assert_eq!(app.library.sel[1], 0);
+    }
+
+    #[test]
+    fn o_sorts_the_focused_column_and_keeps_the_selection() {
+        let mut app = dated_app();
+        press(&mut app, 'l');
+        press(&mut app, 'j');
+        assert_eq!(app.library.tracks_for.as_deref(), Some("x"));
+        let fx = press(&mut app, 'o');
+        assert_eq!(
+            fx,
+            [Effect::SaveSorts(Sorts {
+                albums: AlbumSort::Oldest,
+                ..Sorts::default()
+            })]
+        );
+        assert_eq!(album_ids(&app), ["x", "y"]);
+        assert_eq!(app.library.sel[1], 0);
+        assert_eq!(app.library.tracks_for.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn revealed_album_is_found_after_sorting() {
+        let mut app = dated_app();
+        app.library.reveal("a", Some("x"));
+        api(
+            &mut app,
+            ApiResult::Artist {
+                id: "a".into(),
+                result: Ok(vec![dated("x", 2000), dated("y", 2010)]),
+            },
+        );
+        assert_eq!(app.library.sel[1], 1);
+        assert_eq!(app.library.tracks_for.as_deref(), Some("x"));
+    }
+
+    #[test]
+    fn sort_choices_survive_logout_and_login() {
+        let mut app = loaded_app();
+        press(&mut app, 'o');
+        app.show_login("s", "");
+        assert_eq!(app.library.artist_sort, ArtistSort::MostAlbums);
+        app.view = View::Queue;
+        assert_eq!(press(&mut app, 'o'), []);
     }
 }

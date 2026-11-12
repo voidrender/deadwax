@@ -131,9 +131,23 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 | `R` | Play 200 random songs |
 | `f` | Toggle favorite on the selected song (or the current track in Now Playing) |
 | `a` | Add the selected song to a playlist (picker popup) |
+| `o` | Change the sort order of the focused list (see below) |
 | `X` | Log out (asks to confirm) |
 | `q` or `Ctrl+C` | Quit |
 | `Esc` | Close a popup or leave a text input |
+
+### Sorting
+
+`o` steps through the sort orders of the focused list. The column title shows the current order, and Senritsu remembers your choice between runs.
+
+| List | Orders |
+|---|---|
+| Artists | Name (the server's order), most albums. Favorites stays at the top |
+| Albums | Newest release year first (the default), oldest first, name |
+| Tracks | Album order, title, artist |
+| Playlists | Server order, name |
+
+The queue, search results, and the tracks inside a playlist keep their own order. Playlist tracks follow the order that `J` and `K` set on the server.
 
 ### Lists
 
@@ -164,7 +178,7 @@ In the input, `Enter` or `Esc` leaves the input and `↓` jumps to the results. 
 |---|---|---|
 | Config, `credentials.toml` | `~/.config/senritsu/` | `~/.config/senritsu/` |
 | Logs (`senritsu.log`), album art, `public_art.json` | `~/Library/Caches/senritsu/` | `~/.cache/senritsu/` |
-| `state.json` (saved queue), `outbox.json` (scrobbles waiting to send) | `~/Library/Application Support/senritsu/` | `~/.local/share/senritsu/` |
+| `state.json` (saved queue), `outbox.json` (scrobbles waiting to send), `sorts.json` (sort orders) | `~/Library/Application Support/senritsu/` | `~/.local/share/senritsu/` |
 
 On Linux the config path follows `XDG_CONFIG_HOME`, and the cache and data paths follow `XDG_CACHE_HOME` and `XDG_DATA_HOME`.
 

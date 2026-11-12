@@ -1,8 +1,10 @@
-use super::library::{Column, Loadable};
+use super::library::{Column, Loadable, position};
+use super::sort::{self, PlaylistSort};
 use super::{ApiResult, App, Effect, Popup, Screen, View};
 use crate::player::PlayerCommand;
 use crate::subsonic::{Playlist, Song};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum PlColumn {
@@ -28,6 +30,9 @@ pub struct PlaylistsState {
     /// the shown playlist are held back until this is zero, so they cannot
     /// undo newer optimistic edits.
     pending: usize,
+    pub list_sort: PlaylistSort,
+    /// Server order of the loaded playlists.
+    list_ranks: HashMap<String, usize>,
 }
 
 /// State of the add-to-playlist popup. Row 0 is "+ New playlist" and row
@@ -93,6 +98,17 @@ impl PlaylistsState {
         }
     }
 
+    /// Moves the playlist list to its next sort order, keeping the
+    /// selected playlist selected.
+    pub fn cycle_sort(&mut self) {
+        self.list_sort = self.list_sort.next();
+        if let Loadable::Loaded(lists) = &mut self.lists {
+            let keep = lists.get(self.sel[0]).map(|p| p.id.clone());
+            sort::sort_playlists(lists, self.list_sort, &self.list_ranks);
+            self.sel[0] = position(lists, keep.as_deref(), |p| &p.id);
+        }
+    }
+
     fn len(&self, col: PlColumn) -> usize {
         match col {
             PlColumn::Lists => self.lists.loaded().map_or(0, Vec::len),
@@ -121,9 +137,11 @@ impl PlaylistsState {
             return Ok(Vec::new());
         }
         match result {
-            Ok(lists) => {
+            Ok(mut lists) => {
                 let first_load = self.lists.loaded().is_none();
                 let previous = self.selected_list().map(|p| p.id.clone());
+                self.list_ranks = sort::rank(lists.iter().map(|p| p.id.as_str()));
+                sort::sort_playlists(&mut lists, self.list_sort, &self.list_ranks);
                 self.lists = Loadable::Loaded(lists);
                 let len = self.len(PlColumn::Lists);
                 self.sel[0] = self.sel[0].min(len.saturating_sub(1));
@@ -596,6 +614,7 @@ mod tests {
     use super::*;
     use crate::app::AppEvent;
     use crate::app::library::Column;
+    use crate::app::sort::Sorts;
     use crossterm::event::KeyModifiers;
 
     fn key(app: &mut App, code: KeyCode) -> Vec<Effect> {
@@ -1085,5 +1104,52 @@ mod tests {
             },
         );
         assert_eq!(track_ids(&app), ids(&["a", "b"]));
+    }
+
+    fn list_ids(app: &App) -> Vec<&str> {
+        app.playlists
+            .lists
+            .loaded()
+            .unwrap()
+            .iter()
+            .map(|p| p.id.as_str())
+            .collect()
+    }
+
+    #[test]
+    fn o_sorts_playlists_and_reloads_keep_the_order() {
+        let mut app = app_with_playlist();
+        app.playlists.focus = PlColumn::Lists;
+        let fx = press(&mut app, 'o');
+        assert_eq!(
+            fx,
+            [Effect::SaveSorts(Sorts {
+                playlists: PlaylistSort::Name,
+                ..Sorts::default()
+            })]
+        );
+        assert_eq!(list_ids(&app), ["pl2", "pl1"]);
+        assert_eq!(app.playlists.sel[0], 1);
+        api(
+            &mut app,
+            ApiResult::Playlists(Ok(vec![
+                playlist("pl1", "Mix"),
+                playlist("pl2", "Jazz"),
+                playlist("pl3", "blues"),
+            ])),
+        );
+        assert_eq!(list_ids(&app), ["pl3", "pl2", "pl1"]);
+        assert_eq!(app.playlists.sel[0], 2);
+        press(&mut app, 'o');
+        assert_eq!(list_ids(&app), ["pl1", "pl2", "pl3"]);
+        assert_eq!(app.playlists.sel[0], 0);
+    }
+
+    #[test]
+    fn o_leaves_playlist_tracks_in_playlist_order() {
+        let mut app = app_with_playlist();
+        assert_eq!(press(&mut app, 'o'), []);
+        assert_eq!(track_ids(&app), ids(&["a", "b", "c", "d"]));
+        assert_eq!(app.playlists.list_sort, PlaylistSort::Server);
     }
 }

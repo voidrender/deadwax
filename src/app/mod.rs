@@ -4,6 +4,7 @@ pub mod login;
 pub mod playlists;
 pub mod queue_view;
 pub mod search;
+pub mod sort;
 
 use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
@@ -17,6 +18,7 @@ use login::{LoginField, LoginState};
 use playlists::{PickerState, PlaylistsState, TextPurpose};
 use queue_view::QueueViewState;
 use search::SearchState;
+use sort::Sorts;
 use std::time::{Duration, Instant};
 
 /// Shown after a login that fell back to the credentials file.
@@ -282,6 +284,8 @@ pub enum Effect {
     },
     /// Fetch (or read from cache) and decode a cover for the current track.
     LoadCover(String),
+    /// Save the sort orders so the next run starts with them.
+    SaveSorts(Sorts),
 }
 
 impl Effect {
@@ -361,6 +365,7 @@ impl std::fmt::Debug for Effect {
                 .field("song_ids", song_ids)
                 .finish(),
             Self::LoadCover(id) => f.debug_tuple("LoadCover").field(id).finish(),
+            Self::SaveSorts(s) => f.debug_tuple("SaveSorts").field(s).finish(),
         }
     }
 }
@@ -407,6 +412,44 @@ impl App {
         }
     }
 
+    /// The sort order of every sortable list.
+    pub fn sorts(&self) -> Sorts {
+        Sorts {
+            artists: self.library.artist_sort,
+            albums: self.library.album_sort,
+            tracks: self.library.track_sort,
+            playlists: self.playlists.list_sort,
+        }
+    }
+
+    /// Applies saved sort orders. Lists sort as they load, so call this
+    /// before the first load.
+    pub fn set_sorts(&mut self, sorts: Sorts) {
+        self.library.artist_sort = sorts.artists;
+        self.library.album_sort = sorts.albums;
+        self.library.track_sort = sorts.tracks;
+        self.playlists.list_sort = sorts.playlists;
+    }
+
+    /// `o`: sorts the focused list in the Library or the playlist list.
+    fn cycle_sort(&mut self) -> Vec<Effect> {
+        if self.now_playing {
+            return Vec::new();
+        }
+        match self.view {
+            View::Library => self.library.cycle_sort(),
+            View::Playlists if self.playlists.focus == playlists::PlColumn::Lists => {
+                self.playlists.cycle_sort();
+            }
+            View::Playlists => {
+                self.set_status("Playlist tracks keep their playlist order");
+                return Vec::new();
+            }
+            View::Search | View::Queue => return Vec::new(),
+        }
+        vec![Effect::SaveSorts(self.sorts())]
+    }
+
     /// An app that starts on the login screen, with known fields filled in.
     pub fn login_screen(server: &str, username: &str) -> Self {
         let mut app = Self::default();
@@ -428,9 +471,11 @@ impl App {
         self.now_playing = false;
         self.help = false;
         self.popup = None;
+        let sorts = self.sorts();
         self.library = LibraryState::default();
         self.search = SearchState::default();
         self.playlists = PlaylistsState::default();
+        self.set_sorts(sorts);
         self.session += 1;
         self.pending_stars.clear();
         self.login = LoginState {
@@ -549,9 +594,11 @@ impl App {
                 if saved_to == SavedTo::File {
                     self.set_long_status(FILE_CREDENTIALS_NOTICE);
                 }
+                let sorts = self.sorts();
                 self.library = LibraryState::default();
                 self.search = SearchState::default();
                 self.playlists = PlaylistsState::default();
+                self.set_sorts(sorts);
                 self.session += 1;
                 // A cover load from before the login had no client to use.
                 self.art.clear();
@@ -698,6 +745,7 @@ impl App {
             Action::ToggleStar => return self.toggle_star(),
             Action::AddToPlaylist => return self.open_picker(),
             Action::PlayRandom => return vec![Effect::PlayRandom(RANDOM_COUNT)],
+            Action::CycleSort => return self.cycle_sort(),
             Action::TogglePause => PlayerCommand::TogglePause,
             Action::Next => PlayerCommand::Next,
             Action::Prev => PlayerCommand::Prev,

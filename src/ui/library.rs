@@ -34,9 +34,9 @@ pub fn draw(frame: &mut Frame, area: Rect, lib: &LibraryState) {
 fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
     let focused = lib.focus == col;
     let title = match col {
-        Column::Artists => "Artists",
-        Column::Albums => "Albums",
-        Column::Tracks => "Tracks",
+        Column::Artists => format!("Artists · {}", lib.artist_sort.label()),
+        Column::Albums => format!("Albums · {}", lib.album_sort.label()),
+        Column::Tracks => format!("Tracks · {}", lib.track_sort.label()),
     };
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -201,9 +201,9 @@ mod tests {
     fn wide_shows_three_columns() {
         let text = render(&state(), 100, 10);
         for want in [
-            "Artists",
-            "Albums",
-            "Tracks",
+            "Artists · name",
+            "Albums · newest",
+            "Tracks · album order",
             "Boards of Canada",
             "Geogaddi",
             "2002",
