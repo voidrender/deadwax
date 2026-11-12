@@ -1,11 +1,11 @@
 use super::art::Slot;
 use super::theme;
 use super::widgets::format_duration;
-use crate::app::{App, View};
+use crate::app::App;
 use crate::player::queue::RepeatMode;
 use crate::player::{PlayerSnapshot, Status};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -18,9 +18,6 @@ pub const ART_WIDTH: u16 = 6;
 pub const MAX_PROGRESS_WIDTH: u16 = 80;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Inset one column on each side so the strip lines up with the
-    // columns inside the main border above it.
-    let area = area.inner(Margin::new(1, 0));
     // On wide terminals the art, bar, and indicators sit together in the
     // middle instead of hugging the left edge.
     let content = ART_WIDTH + 1 + MAX_PROGRESS_WIDTH;
@@ -129,23 +126,13 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
 
     let left = match app.status_text() {
         Some(msg) => Line::styled(msg.to_owned(), theme::accent()),
-        None => tabs_line(app.view, app.now_playing),
+        None => Line::from(vec![
+            Span::styled("z ", theme::muted()),
+            Span::styled("Now Playing", theme::dim()),
+        ]),
     };
     frame.render_widget(Paragraph::new(left), left_area);
     frame.render_widget(Paragraph::new(right).right_aligned(), right_area);
-}
-
-fn tabs_line(active: View, now_playing: bool) -> Line<'static> {
-    let mut spans = Vec::new();
-    for (n, view) in (1..).zip(View::ALL) {
-        let style = if view == active && !now_playing {
-            theme::selected()
-        } else {
-            theme::muted()
-        };
-        spans.push(Span::styled(format!(" {n} {} ", view.title()), style));
-    }
-    Line::from(spans)
 }
 
 pub(super) fn modes_line(snap: &PlayerSnapshot) -> Line<'static> {
@@ -184,7 +171,7 @@ mod tests {
     }
 
     #[test]
-    fn strip_is_inset_one_column_on_each_side() {
+    fn strip_fills_narrow_terminals() {
         use crate::ui::testing::buffer_text;
         let mut app = App::new();
         app.player = snap();
@@ -194,14 +181,13 @@ mod tests {
         let text = buffer_text(term.backend().buffer());
         let rows: Vec<&str> = text.lines().collect();
         let col = |row: &str, needle: &str| row.chars().position(|c| needle.starts_with(c));
-        // Art from column 1, a one-column gap, then the text.
-        let text_col = 1 + usize::from(ART_WIDTH) + 1;
+        // Art from column 0, a one-column gap, then the text.
+        let text_col = usize::from(ART_WIDTH) + 1;
         assert_eq!(col(rows[0], "Nothing"), Some(text_col), "{text}");
         assert_eq!(col(rows[1], "▶"), Some(text_col), "{text}");
-        // The tabs start with a padding space.
-        assert_eq!(col(rows[2], "1"), Some(text_col + 1), "{text}");
-        // The volume ends one column before the right edge.
-        assert!(rows[2].ends_with("vol 0% "), "{text}");
+        // The volume ends at the right edge, and no tabs are drawn.
+        assert!(rows[2].ends_with("vol 0%"), "{text}");
+        assert!(!rows[2].contains("Library"), "{text}");
     }
 
     #[test]

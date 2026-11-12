@@ -1,6 +1,6 @@
 use super::library::{Body, body_of, draw_rows};
 use super::theme;
-use super::widgets::{centered, format_duration, tail};
+use super::widgets::{centered, format_duration, pane, tail};
 use crate::app::library::Loadable;
 use crate::app::playlists::{PickerState, PlColumn, PlaylistsState, songs_label};
 use ratatui::Frame;
@@ -42,21 +42,7 @@ fn draw_column(frame: &mut Frame, area: Rect, pl: &PlaylistsState, col: PlColumn
         PlColumn::Lists => format!("Playlists · {}", pl.list_sort.label()),
         PlColumn::Tracks => "Tracks".to_string(),
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(if focused {
-            theme::accent()
-        } else {
-            theme::border()
-        })
-        .title(Span::styled(
-            format!(" {title} "),
-            if focused {
-                theme::accent_bold()
-            } else {
-                theme::muted()
-            },
-        ));
+    let block = pane(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {

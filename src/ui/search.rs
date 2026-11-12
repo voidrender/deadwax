@@ -1,6 +1,6 @@
 use super::library::fit;
 use super::theme;
-use super::widgets::{format_duration, tail};
+use super::widgets::{format_duration, pane, tail};
 use crate::app::library::Loadable;
 use crate::app::search::{SearchRow, SearchState};
 use ratatui::Frame;
@@ -39,6 +39,12 @@ fn draw_input(frame: &mut Frame, area: Rect, search: &SearchState) {
 }
 
 fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState) {
+    let block = pane("Results", !search.editing);
+    let area = {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        inner
+    };
     if area.is_empty() {
         return;
     }

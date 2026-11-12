@@ -1,10 +1,10 @@
 use super::theme;
-use super::widgets::{display_width, format_duration, truncate};
+use super::widgets::{display_width, format_duration, pane, truncate};
 use crate::app::library::{ArtistRow, Column, LibraryState, Loadable};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
+use ratatui::text::Line;
+use ratatui::widgets::{Paragraph, Wrap};
 
 /// Below this width only the focused column and its parent are shown.
 const WIDE: u16 = 80;
@@ -38,21 +38,7 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
         Column::Albums => format!("Albums · {}", lib.album_sort.label()),
         Column::Tracks => format!("Tracks · {}", lib.track_sort.label()),
     };
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(if focused {
-            theme::accent()
-        } else {
-            theme::border()
-        })
-        .title(Span::styled(
-            format!(" {title} "),
-            if focused {
-                theme::accent_bold()
-            } else {
-                theme::muted()
-            },
-        ));
+    let block = pane(&title, focused);
     let inner = block.inner(area);
     frame.render_widget(block, area);
     if inner.is_empty() {

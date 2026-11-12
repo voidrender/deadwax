@@ -60,11 +60,16 @@ fn art_rect(area: Rect, cell_w: u32, cell_h: u32) -> Rect {
 
 fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
     let mut lines = detail_lines(&app.player, area.width);
-    // The strip is hidden in this view, so its status message shows here.
-    if let Some(msg) = app.status_text() {
-        lines.push(Line::raw(""));
-        lines.push(Line::styled(msg.to_owned(), theme::accent()));
-    }
+    // The strip is hidden in this view, so its status message and the key
+    // that leaves the view show here.
+    lines.push(Line::raw(""));
+    lines.push(match app.status_text() {
+        Some(msg) => Line::styled(msg.to_owned(), theme::accent()),
+        None => Line::from(vec![
+            Span::styled("z ", theme::muted()),
+            Span::styled("close", theme::dim()),
+        ]),
+    });
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let top = area.height.saturating_sub(height) / 2;
     let rect = Rect {

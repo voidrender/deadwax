@@ -1,7 +1,8 @@
 use super::library::fit;
 use super::theme;
-use super::widgets::format_duration;
+use super::widgets::{format_duration, pane};
 use crate::app::App;
+use crate::app::playlists::songs_label;
 use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::text::{Line, Span};
@@ -11,10 +12,16 @@ use ratatui::widgets::Paragraph;
 const MARK: usize = 2;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+    let items = &app.player.items;
+    let block = pane(&format!("Queue · {}", songs_label(items.len())), true);
+    let area = {
+        let inner = block.inner(area);
+        frame.render_widget(block, area);
+        inner
+    };
     if area.is_empty() {
         return;
     }
-    let items = &app.player.items;
     if items.is_empty() {
         frame.render_widget(
             Paragraph::new(Line::styled("Queue is empty", theme::dim())),
@@ -102,8 +109,9 @@ mod tests {
     fn current_is_marked() {
         let app = app_with(3);
         let text = render(&app, 60, 6);
+        assert!(text.contains("Queue · 3 songs"), "{text}");
         let line = text.lines().find(|l| l.contains("Song 1")).unwrap();
-        assert!(line.starts_with('▶'), "{line:?}");
+        assert!(line.starts_with("│▶"), "{line:?}");
         let other = text.lines().find(|l| l.contains("Song 0")).unwrap();
         assert!(!other.contains('▶'), "{other:?}");
         assert!(line.contains("2:31") && line.contains("Boards of Canada"));

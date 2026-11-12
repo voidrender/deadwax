@@ -1,5 +1,21 @@
+use super::theme;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
+use ratatui::text::Span;
+use ratatui::widgets::{Block, BorderType};
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+/// A rounded, titled box around one list. The focused one is accented.
+pub fn pane(title: &str, focused: bool) -> Block<'static> {
+    let (border, title_style) = if focused {
+        (theme::accent(), theme::accent_bold())
+    } else {
+        (theme::border(), theme::muted())
+    };
+    Block::bordered()
+        .border_type(BorderType::Rounded)
+        .border_style(border)
+        .title(Span::styled(format!(" {title} "), title_style))
+}
 
 /// Terminal columns `s` occupies.
 pub fn display_width(s: &str) -> usize {
