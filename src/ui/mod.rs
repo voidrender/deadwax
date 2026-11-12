@@ -2,6 +2,7 @@ pub mod help;
 pub mod library;
 pub mod login;
 pub mod playlists;
+pub mod queue;
 pub mod search;
 pub mod strip;
 pub mod theme;
@@ -48,6 +49,8 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
         playlists::draw(frame, inner, &app.playlists);
     } else if !app.now_playing && app.view == View::Search {
         search::draw(frame, inner, &app.search);
+    } else if !app.now_playing && app.view == View::Queue {
+        queue::draw(frame, inner, app);
     }
     strip::draw(frame, strip_area, app);
 }

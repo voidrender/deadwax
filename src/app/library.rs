@@ -420,7 +420,7 @@ impl App {
             View::Library => self.library.focused_song(),
             View::Search => self.search.selected_song(),
             View::Playlists => self.playlists.focused_song(),
-            View::Queue => None,
+            View::Queue => self.selected_queue_song(),
         }
     }
 

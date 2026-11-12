@@ -2,6 +2,7 @@ pub mod keys;
 pub mod library;
 pub mod login;
 pub mod playlists;
+pub mod queue_view;
 pub mod search;
 
 use crate::credentials::SavedTo;
@@ -13,6 +14,7 @@ use keys::{Action, SEEK_STEP, VOLUME_STEP};
 use library::{LibraryState, RANDOM_COUNT};
 use login::{LoginField, LoginState};
 use playlists::{PickerState, PlaylistsState, TextPurpose};
+use queue_view::QueueViewState;
 use search::SearchState;
 use std::time::{Duration, Instant};
 
@@ -361,6 +363,7 @@ pub struct App {
     pub library: LibraryState,
     pub search: SearchState,
     pub playlists: PlaylistsState,
+    pub queue: QueueViewState,
     /// Bumped on every login and logout. Playlist jobs and their results
     /// carry it so work from an earlier session is dropped.
     pub session: u64,
@@ -464,6 +467,7 @@ impl App {
             }
             AppEvent::Snapshot(snap) => {
                 self.player = snap;
+                self.queue.sync(&self.player.items);
                 Vec::new()
             }
             AppEvent::Engine(ev) => {
@@ -557,6 +561,12 @@ impl App {
                 && !self.now_playing =>
             {
                 self.handle_playlists_key(key)
+            }
+            None if self.screen == Screen::Main
+                && self.view == View::Queue
+                && !self.now_playing =>
+            {
+                self.handle_queue_key(key)
             }
             None => Vec::new(),
         }

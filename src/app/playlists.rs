@@ -353,7 +353,7 @@ impl App {
                 PlColumn::Tracks => one(self.playlists.selected_track()),
                 PlColumn::Lists => all(self.playlists.tracks.loaded()),
             },
-            View::Queue => Vec::new(),
+            View::Queue => one(self.selected_queue_song()),
         }
     }
 
