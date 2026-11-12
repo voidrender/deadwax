@@ -8,6 +8,7 @@
 use crate::player::backend::{AudioBackend, BackendEvent, EndReason, EntryId, LoadMode};
 use crate::player::queue::{Queue, Removed, RepeatMode};
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot, Status, UrlFor};
+use std::collections::VecDeque;
 use tokio::sync::{mpsc, watch};
 
 /// `Prev` restarts the current track instead when it has played this long.
@@ -40,6 +41,12 @@ pub struct Engine<B> {
     consecutive_errors: usize,
     /// The backend crashed and could not be restarted.
     backend_dead: bool,
+    /// mpv's pause state as last set by the engine or reported by mpv.
+    mpv_paused: bool,
+    /// Pause changes the engine made that mpv has not reported back yet.
+    pause_echoes: VecDeque<bool>,
+    /// The next pause report is the initial one from a fresh process.
+    skip_pause_report: bool,
     /// The queue changed since the last snapshot copied its items.
     items_dirty: bool,
     shut_down: bool,
@@ -64,6 +71,9 @@ impl<B: AudioBackend> Engine<B> {
             current_ended: false,
             consecutive_errors: 0,
             backend_dead: false,
+            mpv_paused: false,
+            pause_echoes: VecDeque::new(),
+            skip_pause_report: true,
             items_dirty: true,
             shut_down: false,
         }
@@ -262,13 +272,7 @@ impl<B: AudioBackend> Engine<B> {
                     self.duration = d;
                 }
             }
-            BackendEvent::Paused(paused) => {
-                // Status follows the pause state the engine last set, which
-                // mpv has confirmed by replying. Reports that disagree are
-                // stale: the initial pause=false of a fresh process, or the
-                // echo of an earlier toggle that a later one superseded.
-                tracing::trace!(paused, "backend pause report");
-            }
+            BackendEvent::Paused(paused) => self.pause_reported(paused, &mut ev),
             BackendEvent::Idle => {
                 // mpv ran out after the current track ended, so the switch to
                 // the preload never happened (a removal raced the gapless
@@ -288,6 +292,46 @@ impl<B: AudioBackend> Engine<B> {
             BackendEvent::Crashed => self.crashed(&mut ev).await,
         }
         ev
+    }
+
+    /// Adopts pause changes made outside the engine (media keys, mpv
+    /// scripts, user config). Echoes of the engine's own changes and the
+    /// initial report of a fresh process are not adopted.
+    fn pause_reported(&mut self, paused: bool, ev: &mut Vec<EngineEvent>) {
+        let initial = std::mem::take(&mut self.skip_pause_report);
+        self.mpv_paused = paused;
+        if let Some(at) = self.pause_echoes.iter().position(|&p| p == paused) {
+            // mpv may coalesce rapid changes, so drop any skipped echoes too.
+            self.pause_echoes.drain(..=at);
+            return;
+        }
+        let engine_paused = self.status == Status::Paused;
+        if initial || !self.current_started || paused == engine_paused {
+            return;
+        }
+        tracing::info!(paused, "pause changed outside the engine");
+        self.pause_echoes.clear();
+        self.status = if paused {
+            Status::Paused
+        } else {
+            Status::Playing
+        };
+        ev.push(EngineEvent::PauseChanged(paused));
+    }
+
+    /// Records a pause change the engine made so its echo is recognized.
+    fn pause_set(&mut self, paused: bool) {
+        if paused != self.mpv_paused {
+            self.mpv_paused = paused;
+            self.pause_echoes.push_back(paused);
+        }
+    }
+
+    /// Resets pause tracking for a freshly started backend process.
+    fn backend_restarted(&mut self) {
+        self.mpv_paused = false;
+        self.pause_echoes.clear();
+        self.skip_pause_report = true;
     }
 
     fn is_current(&self, entry: EntryId) -> bool {
@@ -396,6 +440,7 @@ impl<B: AudioBackend> Engine<B> {
             self.stop(false, ev).await;
             return;
         }
+        self.backend_restarted();
         if resume {
             self.play_current_from(Some(at), paused, false, ev).await;
         }
@@ -413,6 +458,7 @@ impl<B: AudioBackend> Engine<B> {
                 let paused = self.status == Status::Playing;
                 match self.backend.set_pause(paused).await {
                     Ok(()) => {
+                        self.pause_set(paused);
                         self.status = if paused {
                             Status::Paused
                         } else {
@@ -502,6 +548,7 @@ impl<B: AudioBackend> Engine<B> {
                 return self.stop(false, ev).await;
             }
             self.backend_dead = false;
+            self.backend_restarted();
         }
         let url = (self.url_for)(&song);
         // Replace clears the backend playlist, preload included.
@@ -514,6 +561,7 @@ impl<B: AudioBackend> Engine<B> {
             Ok(id) => {
                 tracing::info!(song_id = %song.id, title = %song.title, "loading track");
                 self.loaded_current = Some((id, uid));
+                self.pause_set(paused);
                 self.begin_track(start, announce);
                 self.status = if paused {
                     Status::Paused
@@ -759,6 +807,8 @@ mod tests {
     /// recorded calls cleared. Song 0 is entry 1 and song 1 is entry 2.
     async fn playing(n: usize) -> Engine<FakeBackend> {
         let mut e = engine();
+        // A fresh mpv reports pause=false first.
+        e.handle_backend(BackendEvent::Paused(false)).await;
         e.handle_command(PlayerCommand::PlayQueue {
             songs: songs(n),
             start: 0,
@@ -1110,6 +1160,70 @@ mod tests {
         let ev = e.handle_command(PlayerCommand::TogglePause).await;
         assert_eq!(e.backend.calls, [Call::Pause(false)]);
         assert_eq!(ev, [EngineEvent::PauseChanged(false)]);
+    }
+
+    #[tokio::test]
+    async fn external_pause_is_adopted() {
+        let mut e = playing(3).await;
+        // A media key or mpv script pauses mpv behind the engine's back.
+        let ev = e.handle_backend(BackendEvent::Paused(true)).await;
+        assert_eq!(ev, [EngineEvent::PauseChanged(true)]);
+        assert_eq!(e.snapshot().status, Status::Paused);
+        let ev = e.handle_command(PlayerCommand::TogglePause).await;
+        assert_eq!(ev, [EngineEvent::PauseChanged(false)]);
+        assert_eq!(e.backend.calls, [Call::Pause(false)]);
+        assert!(
+            e.handle_backend(BackendEvent::Paused(false))
+                .await
+                .is_empty()
+        );
+        assert_eq!(e.snapshot().status, Status::Playing);
+    }
+
+    #[tokio::test]
+    async fn own_pause_echoes_are_ignored() {
+        let mut e = playing(3).await;
+        e.handle_command(PlayerCommand::TogglePause).await;
+        e.handle_command(PlayerCommand::TogglePause).await;
+        assert_eq!(e.backend.calls, [Call::Pause(true), Call::Pause(false)]);
+        assert!(
+            e.handle_backend(BackendEvent::Paused(true))
+                .await
+                .is_empty()
+        );
+        assert_eq!(e.snapshot().status, Status::Playing);
+        assert!(
+            e.handle_backend(BackendEvent::Paused(false))
+                .await
+                .is_empty()
+        );
+        assert_eq!(e.snapshot().status, Status::Playing);
+        // With the echoes consumed, the next report is external again.
+        let ev = e.handle_backend(BackendEvent::Paused(true)).await;
+        assert_eq!(ev, [EngineEvent::PauseChanged(true)]);
+    }
+
+    #[tokio::test]
+    async fn first_pause_report_after_restart_is_ignored() {
+        let mut e = playing(3).await;
+        e.handle_command(PlayerCommand::TogglePause).await;
+        e.handle_backend(BackendEvent::Paused(true)).await;
+        e.handle_backend(BackendEvent::Crashed).await;
+        assert!(
+            e.handle_backend(BackendEvent::Paused(false))
+                .await
+                .is_empty()
+        );
+        e.handle_backend(BackendEvent::FileStarted(1)).await;
+        assert!(
+            e.handle_backend(BackendEvent::Paused(true))
+                .await
+                .is_empty()
+        );
+        assert_eq!(e.snapshot().status, Status::Paused);
+        e.backend.calls.clear();
+        e.handle_command(PlayerCommand::TogglePause).await;
+        assert_eq!(e.backend.calls, [Call::Pause(false)]);
     }
 
     #[tokio::test]
