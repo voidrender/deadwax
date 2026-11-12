@@ -3,7 +3,7 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use discord_rich_presence::activity::{
-    Activity, ActivityType, Assets, StatusDisplayType, Timestamps,
+    Activity, ActivityType, Assets, Button, StatusDisplayType, Timestamps,
 };
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use tokio::sync::mpsc;
@@ -72,6 +72,12 @@ pub fn build_activity(info: &PresenceInfo, default_image: &str, now_unix: i64) -
         end_ts,
     }
 }
+
+/// Label of the presence button that links to the project.
+const REPO_BUTTON_LABEL: &str = "Get Senritsu";
+
+/// Where the presence button points.
+const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
 
 /// Discord accepts image URLs up to 256 bytes; longer ones cannot be truncated safely.
 const MAX_IMAGE_URL_BYTES: usize = 256;
@@ -149,7 +155,8 @@ impl Worker {
                 .details(&spec.details)
                 .state(&spec.state)
                 .timestamps(ts)
-                .assets(assets),
+                .assets(assets)
+                .buttons(vec![Button::new(REPO_BUTTON_LABEL, REPO_URL)]),
         )
     }
 
@@ -254,6 +261,13 @@ mod tests {
         assert_eq!(a.state, "Artist");
         assert_eq!(a.large_image, "https://art.example/c.jpg");
         assert_eq!(a.large_text, "Album");
+    }
+
+    #[test]
+    fn repo_button_fits_discord_limits() {
+        assert!((1..=32).contains(&REPO_BUTTON_LABEL.len()));
+        assert!(REPO_URL.starts_with("https://"));
+        assert!(REPO_URL.len() <= 512);
     }
 
     #[test]
