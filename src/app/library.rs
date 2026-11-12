@@ -419,7 +419,8 @@ impl App {
         match self.view {
             View::Library => self.library.focused_song(),
             View::Search => self.search.selected_song(),
-            _ => None,
+            View::Playlists => self.playlists.focused_song(),
+            View::Queue => None,
         }
     }
 
@@ -509,6 +510,7 @@ impl App {
     fn set_starred_everywhere(&mut self, song_id: &str, starred: bool) {
         self.library.set_starred(song_id, starred);
         self.search.set_starred(song_id, starred);
+        self.playlists.set_starred(song_id, starred);
     }
 
     fn finish_load(&mut self, what: &str, applied: Result<Vec<Effect>, String>) -> Vec<Effect> {

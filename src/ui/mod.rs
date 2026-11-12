@@ -1,6 +1,7 @@
 pub mod help;
 pub mod library;
 pub mod login;
+pub mod playlists;
 pub mod search;
 pub mod strip;
 pub mod theme;
@@ -43,6 +44,8 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
     frame.render_widget(block, main);
     if !app.now_playing && app.view == View::Library {
         library::draw(frame, inner, &app.library);
+    } else if !app.now_playing && app.view == View::Playlists {
+        playlists::draw(frame, inner, &app.playlists);
     } else if !app.now_playing && app.view == View::Search {
         search::draw(frame, inner, &app.search);
     }
@@ -73,6 +76,10 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
                 rect,
             );
         }
+        Popup::TextInput { title, value, .. } => {
+            playlists::draw_text_input(frame, area, title, value)
+        }
+        Popup::PlaylistPicker(picker) => playlists::draw_picker(frame, area, picker),
     }
 }
 
@@ -191,6 +198,27 @@ mod tests {
         });
         let text = render(&mut app, 100, 30);
         assert!(text.contains("Really quit?"), "{text}");
+    }
+
+    #[test]
+    fn renders_tiny_terminal_with_playlist_popups() {
+        use crate::app::playlists::{PickerState, TextPurpose};
+        for (w, h) in [(20, 5), (1, 1), (0, 0), (7, 3), (3, 20)] {
+            let mut app = App::new();
+            app.view = View::Playlists;
+            app.popup = Some(Popup::TextInput {
+                title: "New playlist".into(),
+                value: "a very long playlist name indeed".into(),
+                on_submit: TextPurpose::NewPlaylist { song_ids: vec![] },
+            });
+            render(&mut app, w, h);
+            app.popup = Some(Popup::PlaylistPicker(PickerState {
+                song_ids: vec!["a".into()],
+                lists: crate::app::library::Loadable::Loading,
+                sel: 3,
+            }));
+            render(&mut app, w, h);
+        }
     }
 
     #[test]

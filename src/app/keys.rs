@@ -20,6 +20,7 @@ pub enum Action {
     ToggleShuffle,
     CycleRepeat,
     ToggleStar,
+    AddToPlaylist,
     PlayRandom,
 }
 
@@ -64,6 +65,7 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
         'r' => Action::CycleRepeat,
         'R' => Action::PlayRandom,
         'f' => Action::ToggleStar,
+        'a' => Action::AddToPlaylist,
         _ => return None,
     })
 }
@@ -81,6 +83,9 @@ pub const HELP: &[(&str, &str)] = &[
     ("r", "Cycle repeat: off, all, one"),
     ("R", "Play 200 random songs"),
     ("f", "Toggle favorite on selected song"),
+    ("a", "Add selected song(s) to a playlist"),
+    ("n i D", "New / rename / delete playlist"),
+    ("d J K", "Remove / move track in a playlist"),
     ("j k h l", "Move in lists and columns"),
     ("Enter", "Play from selection"),
     ("e p", "Append / play next"),

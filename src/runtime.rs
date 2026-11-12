@@ -1,4 +1,5 @@
 use crate::app::login::login_error_message;
+use crate::app::playlists::songs_label;
 use crate::app::search::SEARCH_LIMIT;
 use crate::app::{ApiResult, App, AppEvent, Effect};
 use crate::config::Config;
@@ -90,6 +91,9 @@ pub struct Ctx {
     pub engine_events: mpsc::UnboundedReceiver<EngineEvent>,
     /// Sequence of the newest search effect, so superseded ones can be dropped.
     pub latest_search: Arc<AtomicU64>,
+    /// Playlist mutations go to one worker so they reach the server in order.
+    playlist_tx: mpsc::UnboundedSender<Effect>,
+    playlist_rx: Option<mpsc::UnboundedReceiver<Effect>>,
 }
 
 impl Ctx {
@@ -100,6 +104,7 @@ impl Ctx {
         engine_events: mpsc::UnboundedReceiver<EngineEvent>,
     ) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
+        let (playlist_tx, playlist_rx) = mpsc::unbounded_channel();
         Self {
             client,
             config_path: config_path(),
@@ -110,6 +115,8 @@ impl Ctx {
             snapshot,
             engine_events,
             latest_search: Arc::new(AtomicU64::new(0)),
+            playlist_tx,
+            playlist_rx: Some(playlist_rx),
         }
     }
 }
@@ -124,6 +131,9 @@ pub async fn run<B: Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
+    if let Some(rx) = ctx.playlist_rx.take() {
+        tokio::spawn(playlist_worker(rx, ctx.client.clone(), ctx.tx.clone()));
+    }
     let result = event_loop(terminal, app, &mut ctx, EventStream::new()).await;
     shutdown_engine(&mut ctx).await;
     result
@@ -288,6 +298,29 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                 let _ = tx.send(AppEvent::Api(ApiResult::Search { seq, result }));
             });
         }
+        Effect::LoadPlaylists => spawn_api(
+            ctx,
+            |c| async move { c.get_playlists().await },
+            ApiResult::Playlists,
+        ),
+        Effect::LoadPlaylist(id) => {
+            let key = id.clone();
+            spawn_api(
+                ctx,
+                |c| async move { c.get_playlist(&id).await.map(|p| p.songs) },
+                move |result| ApiResult::Playlist { id: key, result },
+            );
+        }
+        mutation @ (Effect::CreatePlaylist { .. }
+        | Effect::RenamePlaylist { .. }
+        | Effect::DeletePlaylist(_)
+        | Effect::AddToPlaylist { .. }
+        | Effect::RemoveFromPlaylist { .. }
+        | Effect::ReplacePlaylistSongs { .. }) => {
+            if ctx.playlist_tx.send(mutation).is_err() {
+                app.set_status("Playlist updates have stopped");
+            }
+        }
         Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),
         Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, id, true),
     }
@@ -315,6 +348,117 @@ fn spawn_api<T, F, Fut>(
         };
         let _ = tx.send(AppEvent::Api(wrap(result)));
     });
+}
+
+/// Runs playlist mutations one at a time, in the order they were sent.
+async fn playlist_worker(
+    mut rx: mpsc::UnboundedReceiver<Effect>,
+    client: SharedClient,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    while let Some(effect) = rx.recv().await {
+        run_playlist_job(effect, &client, &tx).await;
+    }
+}
+
+/// A finished mutation: its result, the playlist to reload, whether the list
+/// changed, and the status text once the playlist name is known.
+type JobOutcome = (
+    Result<(), SubsonicError>,
+    Option<String>,
+    bool,
+    Box<dyn FnOnce(&str) -> String + Send>,
+);
+
+/// Applies one mutation, then reports it and reloads what it touched. The
+/// reload happens after a failure too, so the optimistic local state is
+/// corrected from the server.
+async fn run_playlist_job(
+    effect: Effect,
+    client: &SharedClient,
+    tx: &mpsc::UnboundedSender<AppEvent>,
+) {
+    let send = |r: ApiResult| {
+        let _ = tx.send(AppEvent::Api(r));
+    };
+    let Some(c) = current_client(client) else {
+        send(ApiResult::PlaylistMutated(Err(NOT_LOGGED_IN.to_string())));
+        return;
+    };
+    let (outcome, id, reload_list, message): JobOutcome = match effect {
+        Effect::CreatePlaylist { name, song_ids } => {
+            let n = song_ids.len();
+            match c.create_playlist(&name, &song_ids).await {
+                Ok(p) => (
+                    Ok(()),
+                    Some(p.id),
+                    true,
+                    Box::new(move |_: &str| match n {
+                        0 => format!("Created {name}"),
+                        n => format!("Created {name} with {}", songs_label(n)),
+                    }),
+                ),
+                Err(e) => (Err(e), None, true, Box::new(|_: &str| String::new())),
+            }
+        }
+        Effect::RenamePlaylist { id, name } => (
+            c.rename_playlist(&id, &name).await,
+            Some(id),
+            true,
+            Box::new(move |_: &str| format!("Renamed to {name}")),
+        ),
+        Effect::DeletePlaylist(id) => (
+            c.delete_playlist(&id).await,
+            None,
+            true,
+            Box::new(|_: &str| "Deleted the playlist".to_string()),
+        ),
+        Effect::AddToPlaylist { id, song_ids } => {
+            let n = song_ids.len();
+            (
+                c.add_to_playlist(&id, &song_ids).await,
+                Some(id),
+                true,
+                Box::new(move |name: &str| format!("Added {} to {name}", songs_label(n))),
+            )
+        }
+        Effect::RemoveFromPlaylist { id, index } => (
+            c.remove_from_playlist(&id, &[index]).await,
+            Some(id),
+            false,
+            Box::new(|name: &str| format!("Removed from {name}")),
+        ),
+        Effect::ReplacePlaylistSongs { id, song_ids } => (
+            c.replace_playlist_songs(&id, &song_ids).await,
+            Some(id),
+            false,
+            Box::new(|_: &str| String::new()),
+        ),
+        _ => return,
+    };
+    let reloaded = match &id {
+        Some(id) => Some(c.get_playlist(id).await),
+        None => None,
+    };
+    let name = reloaded
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .map_or("the playlist", |p| p.playlist.name.as_str())
+        .to_string();
+    send(ApiResult::PlaylistMutated(
+        outcome.map(|()| message(&name)).map_err(|e| e.to_string()),
+    ));
+    if let (Some(id), Some(r)) = (id, reloaded) {
+        send(ApiResult::PlaylistReloaded {
+            id,
+            result: r.map(|p| p.songs).map_err(|e| e.to_string()),
+        });
+    }
+    if reload_list {
+        send(ApiResult::Playlists(
+            c.get_playlists().await.map_err(|e| e.to_string()),
+        ));
+    }
 }
 
 fn spawn_album_queue(ctx: &Ctx, id: String, next: bool) {
@@ -677,6 +821,91 @@ mod tests {
         let c = Config::load(&path).unwrap().unwrap();
         assert_eq!(c.discord_default_image, "senritsu");
         assert_eq!(c.username, "alice");
+    }
+
+    #[tokio::test]
+    async fn playlist_worker_runs_jobs_in_order_and_reports() {
+        use serde_json::json;
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let ok = json!({"subsonic-response":{"status":"ok","version":"1.16.1"}});
+        let playlist = json!({"subsonic-response":{"status":"ok","version":"1.16.1",
+            "playlist":{"id":"pl1","name":"Mix","songCount":0,"duration":0}}});
+        let lists = json!({"subsonic-response":{"status":"ok","version":"1.16.1",
+            "playlists":{"playlist":[]}}});
+        Mock::given(path("/rest/updatePlaylist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok.clone()))
+            .mount(&server)
+            .await;
+        Mock::given(path("/rest/createPlaylist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(ok))
+            .mount(&server)
+            .await;
+        Mock::given(path("/rest/getPlaylist"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(playlist))
+            .mount(&server)
+            .await;
+        Mock::given(path("/rest/getPlaylists"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(lists))
+            .mount(&server)
+            .await;
+
+        let shared = SharedClient::default();
+        set_client(
+            &shared,
+            Some(SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap()),
+        );
+        let (job_tx, job_rx) = mpsc::unbounded_channel();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        job_tx
+            .send(Effect::RemoveFromPlaylist {
+                id: "pl1".into(),
+                index: 1,
+            })
+            .unwrap();
+        job_tx
+            .send(Effect::ReplacePlaylistSongs {
+                id: "pl1".into(),
+                song_ids: vec!["a".into(), "b".into()],
+            })
+            .unwrap();
+        job_tx
+            .send(Effect::AddToPlaylist {
+                id: "pl1".into(),
+                song_ids: vec!["a".into(), "b".into(), "c".into()],
+            })
+            .unwrap();
+        drop(job_tx);
+        playlist_worker(job_rx, shared, tx).await;
+
+        let mut mutated = Vec::new();
+        while let Ok(ev) = rx.try_recv() {
+            if let AppEvent::Api(ApiResult::PlaylistMutated(r)) = ev {
+                mutated.push(r);
+            }
+        }
+        assert_eq!(
+            mutated,
+            [
+                Ok("Removed from Mix".to_string()),
+                Ok(String::new()),
+                Ok("Added 3 songs to Mix".to_string()),
+            ]
+        );
+        let writes: Vec<String> = server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .filter(|r| r.url.path() != "/rest/getPlaylist" && r.url.path() != "/rest/getPlaylists")
+            .map(|r| r.url.query().unwrap_or_default().to_string())
+            .collect();
+        assert_eq!(writes.len(), 3);
+        assert!(writes[0].contains("songIndexToRemove=1"), "{writes:?}");
+        assert!(writes[1].contains("songId=a&songId=b"), "{writes:?}");
+        assert!(writes[2].contains("songIdToAdd=c"), "{writes:?}");
     }
 
     async fn run_loop_briefly() -> anyhow::Result<()> {

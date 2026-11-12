@@ -1,16 +1,18 @@
 pub mod keys;
 pub mod library;
 pub mod login;
+pub mod playlists;
 pub mod search;
 
 use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
-use crate::subsonic::{Album, Artist, SearchResults, Song, SubsonicClient};
+use crate::subsonic::{Album, Artist, Playlist, SearchResults, Song, SubsonicClient};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use image::DynamicImage;
 use keys::{Action, SEEK_STEP, VOLUME_STEP};
 use library::{LibraryState, RANDOM_COUNT};
 use login::{LoginField, LoginState};
+use playlists::{PickerState, PlaylistsState, TextPurpose};
 use search::SearchState;
 use std::time::{Duration, Instant};
 
@@ -58,6 +60,14 @@ pub enum Popup {
         message: String,
         on_yes: Box<Effect>,
     },
+    /// A one-line text prompt. All keys type except Esc, Enter, Backspace
+    /// and Ctrl+C.
+    TextInput {
+        title: String,
+        value: String,
+        on_submit: TextPurpose,
+    },
+    PlaylistPicker(PickerState),
 }
 
 /// Results of async work spawned by the runtime. The task that issues a
@@ -96,6 +106,19 @@ pub enum ApiResult {
         seq: u64,
         result: Result<SearchResults, String>,
     },
+    Playlists(Result<Vec<Playlist>, String>),
+    Playlist {
+        id: String,
+        result: Result<Vec<Song>, String>,
+    },
+    /// The server's copy of a playlist after the mutation worker changed it.
+    PlaylistReloaded {
+        id: String,
+        result: Result<Vec<Song>, String>,
+    },
+    /// A playlist mutation finished. `Ok` carries the status to show (empty
+    /// for none).
+    PlaylistMutated(Result<String, String>),
 }
 
 impl std::fmt::Debug for ApiResult {
@@ -141,6 +164,18 @@ impl std::fmt::Debug for ApiResult {
                 .field("seq", seq)
                 .field("result", result)
                 .finish(),
+            Self::Playlists(r) => f.debug_tuple("Playlists").field(r).finish(),
+            Self::Playlist { id, result } => f
+                .debug_struct("Playlist")
+                .field("id", id)
+                .field("result", result)
+                .finish(),
+            Self::PlaylistReloaded { id, result } => f
+                .debug_struct("PlaylistReloaded")
+                .field("id", id)
+                .field("result", result)
+                .finish(),
+            Self::PlaylistMutated(r) => f.debug_tuple("PlaylistMutated").field(r).finish(),
         }
     }
 }
@@ -188,6 +223,44 @@ pub enum Effect {
         query: String,
         seq: u64,
     },
+    LoadPlaylists,
+    LoadPlaylist(String),
+    CreatePlaylist {
+        name: String,
+        song_ids: Vec<String>,
+    },
+    RenamePlaylist {
+        id: String,
+        name: String,
+    },
+    DeletePlaylist(String),
+    AddToPlaylist {
+        id: String,
+        song_ids: Vec<String>,
+    },
+    RemoveFromPlaylist {
+        id: String,
+        index: usize,
+    },
+    ReplacePlaylistSongs {
+        id: String,
+        song_ids: Vec<String>,
+    },
+}
+
+impl Effect {
+    /// Whether the runtime hands this to the playlist mutation worker.
+    pub fn is_playlist_mutation(&self) -> bool {
+        matches!(
+            self,
+            Self::CreatePlaylist { .. }
+                | Self::RenamePlaylist { .. }
+                | Self::DeletePlaylist(_)
+                | Self::AddToPlaylist { .. }
+                | Self::RemoveFromPlaylist { .. }
+                | Self::ReplacePlaylistSongs { .. }
+        )
+    }
 }
 
 impl std::fmt::Debug for Effect {
@@ -222,6 +295,34 @@ impl std::fmt::Debug for Effect {
                 .field("query", query)
                 .field("seq", seq)
                 .finish(),
+            Self::LoadPlaylists => f.write_str("LoadPlaylists"),
+            Self::LoadPlaylist(id) => f.debug_tuple("LoadPlaylist").field(id).finish(),
+            Self::CreatePlaylist { name, song_ids } => f
+                .debug_struct("CreatePlaylist")
+                .field("name", name)
+                .field("song_ids", song_ids)
+                .finish(),
+            Self::RenamePlaylist { id, name } => f
+                .debug_struct("RenamePlaylist")
+                .field("id", id)
+                .field("name", name)
+                .finish(),
+            Self::DeletePlaylist(id) => f.debug_tuple("DeletePlaylist").field(id).finish(),
+            Self::AddToPlaylist { id, song_ids } => f
+                .debug_struct("AddToPlaylist")
+                .field("id", id)
+                .field("song_ids", song_ids)
+                .finish(),
+            Self::RemoveFromPlaylist { id, index } => f
+                .debug_struct("RemoveFromPlaylist")
+                .field("id", id)
+                .field("index", index)
+                .finish(),
+            Self::ReplacePlaylistSongs { id, song_ids } => f
+                .debug_struct("ReplacePlaylistSongs")
+                .field("id", id)
+                .field("song_ids", song_ids)
+                .finish(),
         }
     }
 }
@@ -235,6 +336,7 @@ pub struct App {
     pub view: View,
     pub library: LibraryState,
     pub search: SearchState,
+    pub playlists: PlaylistsState,
     /// Songs with a star toggle in flight, mapped to their value before it.
     pub pending_stars: std::collections::HashMap<String, bool>,
     pub now_playing: bool,
@@ -281,6 +383,7 @@ impl App {
         self.popup = None;
         self.library = LibraryState::default();
         self.search = SearchState::default();
+        self.playlists = PlaylistsState::default();
         self.pending_stars.clear();
         self.login = LoginState {
             server: server.to_string(),
@@ -318,6 +421,12 @@ impl App {
     }
 
     pub fn handle_event(&mut self, ev: AppEvent) -> Vec<Effect> {
+        let effects = self.dispatch(ev);
+        self.note_playlist_effects(&effects);
+        effects
+    }
+
+    fn dispatch(&mut self, ev: AppEvent) -> Vec<Effect> {
         match ev {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Resize => Vec::new(),
@@ -351,6 +460,7 @@ impl App {
                 }
                 self.library = LibraryState::default();
                 self.search = SearchState::default();
+                self.playlists = PlaylistsState::default();
                 return self.library.start();
             }
             ApiResult::LoginFailed(msg) => {
@@ -365,6 +475,10 @@ impl App {
                 }
             }
             r @ ApiResult::Search { .. } => self.handle_search_result(r),
+            r @ (ApiResult::Playlists(_)
+            | ApiResult::Playlist { .. }
+            | ApiResult::PlaylistReloaded { .. }
+            | ApiResult::PlaylistMutated(_)) => return self.handle_playlist_result(r),
             other => return self.handle_library_result(other),
         }
         Vec::new()
@@ -403,6 +517,12 @@ impl App {
             {
                 self.handle_search_key(key)
             }
+            None if self.screen == Screen::Main
+                && self.view == View::Playlists
+                && !self.now_playing =>
+            {
+                self.handle_playlists_key(key)
+            }
             None => Vec::new(),
         }
     }
@@ -418,6 +538,12 @@ impl App {
                 KeyCode::Char('n') | KeyCode::Esc => (None, Vec::new()),
                 _ => (Some(Popup::Confirm { message, on_yes }), Vec::new()),
             },
+            Popup::TextInput {
+                title,
+                value,
+                on_submit,
+            } => self.text_input_key(title, value, on_submit, key),
+            Popup::PlaylistPicker(picker) => self.picker_key(picker, key),
         };
         self.popup = keep;
         effects
@@ -428,6 +554,9 @@ impl App {
             Action::ShowView(view) => {
                 self.view = view;
                 self.now_playing = false;
+                if view == View::Playlists {
+                    return self.playlists.start();
+                }
                 return Vec::new();
             }
             Action::FocusSearch => {
@@ -459,6 +588,7 @@ impl App {
                 return Vec::new();
             }
             Action::ToggleStar => return self.toggle_star(),
+            Action::AddToPlaylist => return self.open_picker(),
             Action::PlayRandom => return vec![Effect::PlayRandom(RANDOM_COUNT)],
             Action::TogglePause => PlayerCommand::TogglePause,
             Action::Next => PlayerCommand::Next,
@@ -497,7 +627,7 @@ mod tests {
     #[test]
     fn number_keys_switch_views() {
         let mut app = App::new();
-        assert!(press(&mut app, '2').is_empty());
+        assert_eq!(press(&mut app, '2'), [Effect::LoadPlaylists]);
         assert_eq!(app.view, View::Playlists);
         press(&mut app, '4');
         assert_eq!(app.view, View::Queue);

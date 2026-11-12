@@ -86,13 +86,17 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
     }
 }
 
-enum Body {
+pub(super) enum Body {
     /// Left text and right-aligned text per row.
     Rows(Vec<(String, String)>),
     Message(Vec<Line<'static>>),
 }
 
-fn body_of<T>(data: &Loadable<Vec<T>>, empty: &str, row: impl Fn(&T) -> (String, String)) -> Body {
+pub(super) fn body_of<T>(
+    data: &Loadable<Vec<T>>,
+    empty: &str,
+    row: impl Fn(&T) -> (String, String),
+) -> Body {
     match data {
         Loadable::NotLoaded => Body::Message(Vec::new()),
         Loadable::Loading => Body::Message(vec![Line::styled("Loading…", theme::dim())]),
@@ -107,7 +111,13 @@ fn body_of<T>(data: &Loadable<Vec<T>>, empty: &str, row: impl Fn(&T) -> (String,
     }
 }
 
-fn draw_rows(frame: &mut Frame, area: Rect, rows: &[(String, String)], sel: usize, focused: bool) {
+pub(super) fn draw_rows(
+    frame: &mut Frame,
+    area: Rect,
+    rows: &[(String, String)],
+    sel: usize,
+    focused: bool,
+) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = sel.min(rows.len().saturating_sub(1));
