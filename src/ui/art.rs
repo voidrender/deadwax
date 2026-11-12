@@ -430,7 +430,17 @@ impl ArtState {
             }
         }
         let size = protocol.size_for(RESIZE, area.as_size());
-        let rect = centered(area, size.width, size.height);
+        // The strip's cover sits flush left, in line with the panes above.
+        let rect = match slot {
+            Slot::Strip => {
+                let row = centered(area, area.width, size.height);
+                Rect {
+                    width: size.width.min(area.width),
+                    ..row
+                }
+            }
+            Slot::Large => centered(area, size.width, size.height),
+        };
         protocol.render(rect, frame.buffer_mut());
         state.protocol = Some(protocol);
         self.drawn.push((slot, rect, generation));
@@ -526,6 +536,25 @@ mod tests {
         art.expect("b".into());
         art.finish_resize(done);
         assert!(!art.has_image());
+    }
+
+    #[test]
+    fn strip_art_is_flush_left_and_large_art_is_centered() {
+        for (slot, flush) in [(Slot::Strip, true), (Slot::Large, false)] {
+            let mut art = ArtState::new(halfblocks());
+            art.expect("a".into());
+            art.set_image("a", image());
+            let mut term = Terminal::new(TestBackend::new(40, 6)).unwrap();
+            term.draw(|f| {
+                art.begin_frame(false);
+                art.render(f, f.area(), slot);
+                art.end_frame();
+            })
+            .unwrap();
+            let rect = art.last_drawn[0].1;
+            assert!(rect.width < 40, "{rect:?}");
+            assert_eq!(rect.x == 0, flush, "{slot:?} {rect:?}");
+        }
     }
 
     #[test]

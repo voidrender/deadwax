@@ -5,7 +5,7 @@ use crate::app::{App, View};
 use crate::player::queue::RepeatMode;
 use crate::player::{PlayerSnapshot, Status};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Margin, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -18,6 +18,9 @@ pub const ART_WIDTH: u16 = 6;
 pub const MAX_PROGRESS_WIDTH: u16 = 80;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Inset one column on each side so the strip lines up with the
+    // columns inside the main border above it.
+    let area = area.inner(Margin::new(1, 0));
     let [art, _, info] = Layout::horizontal([
         Constraint::Length(ART_WIDTH),
         Constraint::Length(1),
@@ -170,6 +173,27 @@ mod tests {
     }
 
     #[test]
+    fn strip_is_inset_one_column_on_each_side() {
+        use crate::ui::testing::buffer_text;
+        let mut app = App::new();
+        app.player = snap();
+        let mut term =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, HEIGHT)).unwrap();
+        term.draw(|f| draw(f, f.area(), &mut app)).unwrap();
+        let text = buffer_text(term.backend().buffer());
+        let rows: Vec<&str> = text.lines().collect();
+        let col = |row: &str, needle: &str| row.chars().position(|c| needle.starts_with(c));
+        // Art from column 1, a one-column gap, then the text.
+        let text_col = 1 + usize::from(ART_WIDTH) + 1;
+        assert_eq!(col(rows[0], "Nothing"), Some(text_col), "{text}");
+        assert_eq!(col(rows[1], "▶"), Some(text_col), "{text}");
+        // The tabs start with a padding space.
+        assert_eq!(col(rows[2], "1"), Some(text_col + 1), "{text}");
+        // The volume ends one column before the right edge.
+        assert!(rows[2].ends_with("vol 0% "), "{text}");
+    }
+
+    #[test]
     fn indicators_end_with_the_bar_on_wide_terminals() {
         use crate::ui::testing::buffer_text;
         let mut app = App::new();
@@ -179,7 +203,7 @@ mod tests {
         term.draw(|f| draw(f, f.area(), &mut app)).unwrap();
         let text = buffer_text(term.backend().buffer());
         let rows: Vec<&str> = text.lines().collect();
-        let end = usize::from(ART_WIDTH) + 1 + usize::from(MAX_PROGRESS_WIDTH);
+        let end = 1 + usize::from(ART_WIDTH) + 1 + usize::from(MAX_PROGRESS_WIDTH);
         let bar: Vec<char> = rows[1].chars().collect();
         let tabs: Vec<char> = rows[2].chars().collect();
         assert_eq!(bar[end - 1], '0', "{text}");
