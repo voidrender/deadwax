@@ -121,7 +121,7 @@ mod tests {
         ResponseTemplate::new(200).set_body_raw(body.to_string(), "application/json")
     }
 
-    async fn client_for(server: &MockServer) -> SubsonicClient {
+    fn client_for(server: &MockServer) -> SubsonicClient {
         SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap()
     }
 
@@ -135,7 +135,7 @@ mod tests {
     }
 
     fn ids(v: &[&str]) -> Vec<String> {
-        v.iter().map(|s| s.to_string()).collect()
+        v.iter().map(std::string::ToString::to_string).collect()
     }
 
     #[tokio::test]
@@ -149,7 +149,6 @@ mod tests {
             .mount(&server)
             .await;
         let p = client_for(&server)
-            .await
             .create_playlist("Mix", &ids(&["a", "b"]))
             .await
             .unwrap();
@@ -168,7 +167,6 @@ mod tests {
             .mount(&server)
             .await;
         client_for(&server)
-            .await
             .replace_playlist_songs("pl-1", &ids(&["c", "a", "b"]))
             .await
             .unwrap();
@@ -185,7 +183,6 @@ mod tests {
             .mount(&server)
             .await;
         client_for(&server)
-            .await
             .remove_from_playlist("pl-1", &[0, 3])
             .await
             .unwrap();
@@ -202,7 +199,6 @@ mod tests {
             .mount(&server)
             .await;
         client_for(&server)
-            .await
             .add_to_playlist("pl-1", &ids(&["a", "b"]))
             .await
             .unwrap();
@@ -225,7 +221,7 @@ mod tests {
             .expect(1)
             .mount(&server)
             .await;
-        let c = client_for(&server).await;
+        let c = client_for(&server);
         c.rename_playlist("pl-1", "New").await.unwrap();
         c.delete_playlist("pl-1").await.unwrap();
     }
@@ -239,7 +235,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let lists = client_for(&server).await.get_playlists().await.unwrap();
+        let lists = client_for(&server).get_playlists().await.unwrap();
         assert_eq!(lists.len(), 2);
         assert_eq!(lists[0].song_count, 12);
         assert_eq!(lists[0].owner.as_deref(), Some("alice"));
@@ -258,7 +254,6 @@ mod tests {
             .await;
         assert!(
             client_for(&server)
-                .await
                 .get_playlists()
                 .await
                 .unwrap()
@@ -276,11 +271,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let p = client_for(&server)
-            .await
-            .get_playlist("pl-1")
-            .await
-            .unwrap();
+        let p = client_for(&server).get_playlist("pl-1").await.unwrap();
         assert_eq!(p.playlist.name, "Favorites Mix");
         assert_eq!(p.songs.len(), 2);
         assert!(p.songs[1].starred);

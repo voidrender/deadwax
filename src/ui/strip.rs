@@ -79,7 +79,13 @@ pub(super) fn progress_line(snap: &PlayerSnapshot, width: u16) -> Line<'static> 
     } else {
         0.0
     };
-    let filled = ((gauge as f64) * ratio).round() as usize;
+    let gauge_cells = f64::from(u16::try_from(gauge).unwrap_or(u16::MAX));
+    #[expect(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "ratio is clamped to 0..=1, so the result is within 0..=gauge"
+    )]
+    let filled = (gauge_cells * ratio).round() as usize;
 
     Line::from(vec![
         Span::styled(icon, theme::accent()),

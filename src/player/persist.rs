@@ -106,6 +106,7 @@ impl Queue {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests compare exact, known values")]
 mod tests {
     use super::*;
 

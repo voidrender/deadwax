@@ -73,13 +73,15 @@ pub type SharedClient = Arc<RwLock<Option<SubsonicClient>>>;
 pub fn current_client(shared: &SharedClient) -> Option<SubsonicClient> {
     shared
         .read()
-        .unwrap_or_else(|e| e.into_inner())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
         .as_ref()
         .cloned()
 }
 
 fn set_client(shared: &SharedClient, client: Option<SubsonicClient>) {
-    *shared.write().unwrap_or_else(|e| e.into_inner()) = client;
+    *shared
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = client;
 }
 
 pub fn config_path() -> PathBuf {
@@ -216,24 +218,18 @@ where
             },
             _ = tick.tick() => AppEvent::Tick,
             Some(ev) = ctx.rx.recv() => ev,
-            changed = ctx.snapshot.changed(), if snapshot_open => match changed {
-                Ok(()) => AppEvent::Snapshot(ctx.snapshot.borrow_and_update().clone()),
-                Err(_) => {
-                    snapshot_open = false;
-                    continue;
-                }
+            changed = ctx.snapshot.changed(), if snapshot_open => if let Ok(()) = changed { AppEvent::Snapshot(ctx.snapshot.borrow_and_update().clone()) } else {
+                snapshot_open = false;
+                continue;
             },
-            ev = ctx.engine_events.recv(), if engine_open => match ev {
-                Some(ev) => {
-                    if let Some(hub) = &ctx.hub {
-                        let _ = hub.send((ev.clone(), unix_ms()));
-                    }
-                    AppEvent::Engine(ev)
+            ev = ctx.engine_events.recv(), if engine_open => if let Some(ev) = ev {
+                if let Some(hub) = &ctx.hub {
+                    let _ = hub.send((ev.clone(), unix_ms()));
                 }
-                None => {
-                    engine_open = false;
-                    continue;
-                }
+                AppEvent::Engine(ev)
+            } else {
+                engine_open = false;
+                continue;
             },
         };
         if let AppEvent::Api(ApiResult::LoggedIn { client, .. }) = &ev {
@@ -973,7 +969,7 @@ async fn hub_task<P: HubPorts + Sync + 'static>(
     mut rx: mpsc::UnboundedReceiver<(EngineEvent, i64)>,
 ) {
     while let Some((ev, at_ms)) = rx.recv().await {
-        hub.on_event(&ev, at_ms).await;
+        hub.on_event(&ev, at_ms);
     }
 }
 
@@ -1071,18 +1067,17 @@ async fn send_scrobble(client: SubsonicClient, outbox: SharedOutbox, action: Scr
         Err(SubsonicError::Network(e)) if submission => {
             tracing::info!(%song_id, "server unreachable, keeping the scrobble: {e}");
             let mut guard = outbox.lock().await;
-            match guard.as_mut() {
-                Some(ob) => {
-                    let pending = PendingScrobble {
-                        song_id,
-                        time_ms,
-                        account: account_key(&client),
-                    };
-                    if let Err(e) = ob.push(pending) {
-                        tracing::warn!("saving the scrobble outbox failed: {e:#}");
-                    }
+            if let Some(ob) = guard.as_mut() {
+                let pending = PendingScrobble {
+                    song_id,
+                    time_ms,
+                    account: account_key(&client),
+                };
+                if let Err(e) = ob.push(pending) {
+                    tracing::warn!("saving the scrobble outbox failed: {e:#}");
                 }
-                None => tracing::warn!(%song_id, "no outbox, scrobble dropped"),
+            } else {
+                tracing::warn!(%song_id, "no outbox, scrobble dropped");
             }
         }
         Err(e) => tracing::warn!(%song_id, submission, "scrobble failed: {e}"),
@@ -1230,6 +1225,7 @@ async fn restore_queue(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests compare exact, known values")]
 mod tests {
     use super::*;
     use crate::credentials::SecretError;

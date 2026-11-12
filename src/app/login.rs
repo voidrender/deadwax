@@ -52,8 +52,9 @@ pub fn login_error_message(e: &SubsonicError) -> String {
     match e {
         SubsonicError::Api { code: 40, .. } => "Wrong username or password".to_string(),
         SubsonicError::Network(_) => "Couldn't reach the server. Check the URL.".to_string(),
-        SubsonicError::Api { message, .. } => format!("Server error: {message}"),
-        SubsonicError::Parse(message) => format!("Server error: {message}"),
+        SubsonicError::Api { message, .. } | SubsonicError::Parse(message) => {
+            format!("Server error: {message}")
+        }
     }
 }
 

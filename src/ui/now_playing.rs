@@ -48,7 +48,9 @@ fn art_rect(area: Rect, cell_w: u32, cell_h: u32) -> Rect {
         h = max_h;
         w = (h * cell_h / cell_w).min(max_w);
     }
-    let (w, h) = (w as u16, h as u16);
+    // Both fit: w is at most the area width and h at most its height.
+    let w = u16::try_from(w).unwrap_or(area.width);
+    let h = u16::try_from(h).unwrap_or(area.height);
     Rect::new(area.x + MARGIN, area.y + (area.height - h) / 2, w, h)
 }
 
@@ -195,7 +197,11 @@ mod tests {
 
     fn cover_image() -> image::DynamicImage {
         image::RgbImage::from_fn(64, 64, |x, y| {
-            image::Rgb([(x * 4) as u8, (y * 4) as u8, 128])
+            image::Rgb([
+                u8::try_from(x * 4).unwrap(),
+                u8::try_from(y * 4).unwrap(),
+                128,
+            ])
         })
         .into()
     }
@@ -204,7 +210,7 @@ mod tests {
     fn now_playing_shows_details() {
         let mut app = app_with(Some("al-1"));
         app.art.expect("al-1".into());
-        app.art.set_image("al-1".into(), cover_image());
+        app.art.set_image("al-1", cover_image());
         let text = render(&mut app, 100, 30);
         for want in [
             "Roygbiv",
@@ -235,7 +241,7 @@ mod tests {
     fn small_now_playing_shows_text_only() {
         let mut app = app_with(Some("al-1"));
         app.art.expect("al-1".into());
-        app.art.set_image("al-1".into(), cover_image());
+        app.art.set_image("al-1", cover_image());
         let text = render(&mut app, 59, 20);
         assert!(text.contains("Roygbiv"), "{text}");
         assert!(!text.contains(['♪', '▀', '▄']), "{text}");
@@ -245,7 +251,7 @@ mod tests {
     fn renders_at_any_size_without_panicking() {
         let mut app = app_with(Some("al-1"));
         app.art.expect("al-1".into());
-        app.art.set_image("al-1".into(), cover_image());
+        app.art.set_image("al-1", cover_image());
         for (w, h) in [
             (0, 0),
             (1, 1),

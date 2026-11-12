@@ -14,8 +14,7 @@ pub fn config_dir() -> PathBuf {
         .map(PathBuf::from)
         .filter(|p| p.is_absolute());
     let home = directories::BaseDirs::new()
-        .map(|b| b.home_dir().to_path_buf())
-        .unwrap_or_else(|| PathBuf::from("."));
+        .map_or_else(|| PathBuf::from("."), |b| b.home_dir().to_path_buf());
     config_dir_from(xdg.as_deref(), &home)
 }
 

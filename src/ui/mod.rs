@@ -86,7 +86,7 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
             );
         }
         Popup::TextInput { title, value, .. } => {
-            playlists::draw_text_input(frame, area, title, value)
+            playlists::draw_text_input(frame, area, title, value);
         }
         Popup::PlaylistPicker(picker) => playlists::draw_picker(frame, area, picker),
     }
@@ -255,7 +255,11 @@ mod tests {
         app.player.items[0].song.cover_art = Some("al-1".into());
         app.handle_event(crate::app::AppEvent::Snapshot(app.player.clone()));
         let image = image::RgbImage::from_fn(32, 32, |x, y| {
-            image::Rgb([(x * 8) as u8, 40, (y * 8) as u8])
+            image::Rgb([
+                u8::try_from(x * 8).unwrap(),
+                40,
+                u8::try_from(y * 8).unwrap(),
+            ])
         });
         app.handle_event(crate::app::AppEvent::CoverReady {
             cover_id: "al-1".into(),

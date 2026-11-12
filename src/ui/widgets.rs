@@ -49,7 +49,13 @@ pub fn tail(s: &str, room: usize) -> &str {
 /// Formats seconds as `m:ss`, or `h:mm:ss` from one hour up.
 pub fn format_duration(secs: f64) -> String {
     let total = if secs.is_finite() && secs > 0.0 {
-        secs as u64
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "secs is positive, and whole seconds are wanted"
+        )]
+        let whole = secs as u64;
+        whole
     } else {
         0
     };

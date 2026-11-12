@@ -203,7 +203,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let mut ob = Outbox::open(outbox_path(&dir)).unwrap();
         for (i, id) in ["a", "b", "c"].iter().enumerate() {
-            ob.push(p(id, i as i64)).unwrap();
+            ob.push(p(id, i64::try_from(i).unwrap())).unwrap();
         }
         let seen = Arc::new(Mutex::new(Vec::new()));
         let s2 = seen.clone();
@@ -228,7 +228,7 @@ mod tests {
         let path = outbox_path(&dir);
         let mut ob = Outbox::open(path.clone()).unwrap();
         for (i, id) in ["a", "b", "c"].iter().enumerate() {
-            ob.push(p(id, i as i64)).unwrap();
+            ob.push(p(id, i64::try_from(i).unwrap())).unwrap();
         }
         let n = ob
             .flush(ME, |s| async move {

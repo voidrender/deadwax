@@ -14,6 +14,10 @@ fn default_true() -> bool {
     true
 }
 
+#[expect(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "serde's skip_serializing_if passes a reference"
+)]
 fn is_true(v: &bool) -> bool {
     *v
 }

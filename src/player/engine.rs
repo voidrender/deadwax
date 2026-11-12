@@ -671,12 +671,9 @@ pub async fn run<B: AudioBackend>(
     loop {
         let out = tokio::select! {
             biased;
-            ev = backend_events.recv(), if backend_open => match ev {
-                Some(ev) => engine.handle_backend(ev).await,
-                None => {
-                    backend_open = false;
-                    continue;
-                }
+            ev = backend_events.recv(), if backend_open => if let Some(ev) = ev { engine.handle_backend(ev).await } else {
+                backend_open = false;
+                continue;
             },
             cmd = commands.recv() => match cmd {
                 Some(cmd) => engine.handle_command(cmd).await,
@@ -703,6 +700,7 @@ fn media_title(song: &crate::subsonic::Song) -> String {
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests compare exact, known values")]
 mod tests {
     use super::*;
     use crate::player::persist::PersistedQueue;

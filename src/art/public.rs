@@ -38,7 +38,7 @@ enum Step {
 }
 
 /// Finds a public cover image URL for Discord. It owns its own HTTP client and
-/// is only ever given artist/album names or MusicBrainz ids.
+/// is only ever given artist/album names or `MusicBrainz` ids.
 pub struct PublicArtResolver {
     http: reqwest::Client,
     endpoints: Endpoints,

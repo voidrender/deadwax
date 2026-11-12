@@ -42,7 +42,12 @@ pub fn fit(s: &str) -> String {
 
 pub fn build_activity(info: &PresenceInfo, default_image: &str, now_unix: i64) -> ActivitySpec {
     let position = if info.position.is_finite() && info.position > 0.0 {
-        info.position as i64
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "whole seconds are wanted, and the cast saturates"
+        )]
+        let secs = info.position as i64;
+        secs
     } else {
         0
     };
@@ -216,7 +221,8 @@ fn run_worker(app_id: &str, default_image: &str, mut rx: mpsc::UnboundedReceiver
 fn unix_now() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
+        .ok()
+        .and_then(|d| i64::try_from(d.as_secs()).ok())
         .unwrap_or(0)
 }
 

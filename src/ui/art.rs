@@ -311,8 +311,8 @@ impl ArtState {
 
     /// Installs a decoded cover. It is ignored unless `cover_id` is the one
     /// the current track wants, so a late load never shows the wrong art.
-    pub fn set_image(&mut self, cover_id: String, img: DynamicImage) {
-        if self.cover_id.as_deref() != Some(cover_id.as_str()) {
+    pub fn set_image(&mut self, cover_id: &str, img: DynamicImage) {
+        if self.cover_id.as_deref() != Some(cover_id) {
             return;
         }
         self.drop_image();
@@ -485,7 +485,11 @@ mod tests {
     fn image() -> DynamicImage {
         // A gradient, because a flat color renders as plain spaces.
         image::RgbImage::from_fn(40, 40, |x, y| {
-            image::Rgb([(x * 6) as u8, (y * 6) as u8, 90])
+            image::Rgb([
+                u8::try_from(x * 6).unwrap(),
+                u8::try_from(y * 6).unwrap(),
+                90,
+            ])
         })
         .into()
     }
@@ -507,7 +511,7 @@ mod tests {
         let mut art = ArtState::default();
         art.set_resizer(tx);
         art.expect("a".into());
-        art.set_image("a".into(), image());
+        art.set_image("a", image());
 
         // The first frame hands the work off and shows the placeholder.
         assert!(draw(&mut art, 12, 6).contains('♪'));
@@ -528,7 +532,7 @@ mod tests {
     fn overlays_suppress_the_image() {
         let mut art = ArtState::default();
         art.expect("a".into());
-        art.set_image("a".into(), image());
+        art.set_image("a", image());
         let mut term = Terminal::new(TestBackend::new(12, 6)).unwrap();
         term.draw(|f| {
             art.begin_frame(true);
@@ -545,7 +549,7 @@ mod tests {
         picker.set_protocol_type(ProtocolType::Sixel);
         let mut art = ArtState::new(picker);
         art.expect("a".into());
-        art.set_image("a".into(), image());
+        art.set_image("a", image());
         draw(&mut art, 12, 6);
         assert!(!art.take_needs_clear());
         draw(&mut art, 12, 6);

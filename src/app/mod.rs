@@ -449,7 +449,7 @@ impl App {
     /// The timestamp is pushed into the future, so the normal expiry check
     /// (which saturates at zero) keeps it alive for the extra time.
     pub fn set_long_status(&mut self, msg: impl Into<String>) {
-        let at = Instant::now() + (LONG_STATUS_TTL - STATUS_TTL);
+        let at = Instant::now() + LONG_STATUS_TTL.checked_sub(STATUS_TTL).unwrap();
         self.status = Some((msg.into(), at));
     }
 
@@ -495,7 +495,7 @@ impl App {
             }
             AppEvent::Api(result) => self.handle_api(result),
             AppEvent::CoverReady { cover_id, image } => {
-                self.art.set_image(cover_id, image);
+                self.art.set_image(&cover_id, image);
                 Vec::new()
             }
             AppEvent::CoverFailed { cover_id } => {

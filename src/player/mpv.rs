@@ -2,6 +2,7 @@ use super::backend::{AudioBackend, BackendEvent, EndReason, EntryId, LoadMode};
 use anyhow::{Context, anyhow, bail};
 use serde_json::{Value, json};
 use std::collections::HashMap;
+use std::fmt::Write as _;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
@@ -141,9 +142,9 @@ impl MpvBackend {
 fn file_options(start: Option<f64>, title: &str) -> String {
     let mut opts = String::new();
     if let Some(s) = start.filter(|s| s.is_finite() && *s > 0.0) {
-        opts.push_str(&format!("start={s},"));
+        let _ = write!(opts, "start={s},");
     }
-    opts.push_str(&format!("force-media-title=%{}%{title}", title.len()));
+    let _ = write!(opts, "force-media-title=%{}%{title}", title.len());
     opts
 }
 
@@ -274,7 +275,7 @@ impl Conn {
             }
         };
         if let (Some(ours), Ok(Some(peer))) = (pid, stream.peer_cred().map(|c| c.pid()))
-            && peer != ours as i32
+            && i32::try_from(ours).ok() != Some(peer)
         {
             bail!("mpv IPC socket is owned by another process");
         }

@@ -109,7 +109,8 @@ impl SubsonicClient {
                 code: err
                     .and_then(|e| e.get("code"))
                     .and_then(Value::as_i64)
-                    .unwrap_or(0) as i32,
+                    .and_then(|c| i32::try_from(c).ok())
+                    .unwrap_or(0),
                 message: err
                     .and_then(|e| e.get("message"))
                     .and_then(Value::as_str)
@@ -374,7 +375,7 @@ mod tests {
         ResponseTemplate::new(200).set_body_raw(body.to_string(), "application/json")
     }
 
-    async fn client_for(server: &MockServer) -> SubsonicClient {
+    fn client_for(server: &MockServer) -> SubsonicClient {
         SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap()
     }
 
@@ -387,7 +388,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let artists = client_for(&server).await.get_artists().await.unwrap();
+        let artists = client_for(&server).get_artists().await.unwrap();
         let names: Vec<_> = artists.iter().map(|a| a.name.as_str()).collect();
         assert_eq!(names, ["Aimer", "Ado", "YOASOBI"]);
         assert_eq!(artists[0].album_count, 4);
@@ -404,7 +405,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let a = client_for(&server).await.get_artist("ar-1").await.unwrap();
+        let a = client_for(&server).get_artist("ar-1").await.unwrap();
         assert_eq!(a.artist.name, "Aimer");
         assert_eq!(a.albums.len(), 2);
         assert_eq!(a.albums[1].year, Some(2020));
@@ -418,7 +419,7 @@ mod tests {
             .respond_with(fixture(include_str!("../../tests/fixtures/get_album.json")))
             .mount(&server)
             .await;
-        let a = client_for(&server).await.get_album("al-1").await.unwrap();
+        let a = client_for(&server).get_album("al-1").await.unwrap();
         assert_eq!(a.songs.len(), 2);
         assert!(!a.songs[0].starred);
         assert!(a.songs[1].starred);
@@ -439,7 +440,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let a = client_for(&server).await.get_album("al-9").await.unwrap();
+        let a = client_for(&server).get_album("al-9").await.unwrap();
         let s = &a.songs[0];
         assert_eq!(s.title, "旋律");
         assert_eq!(s.duration, 0);
@@ -460,11 +461,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let songs = client_for(&server)
-            .await
-            .get_random_songs(200)
-            .await
-            .unwrap();
+        let songs = client_for(&server).get_random_songs(200).await.unwrap();
         assert_eq!(songs.len(), 2);
     }
 
@@ -479,7 +476,7 @@ mod tests {
             .respond_with(fixture(include_str!("../../tests/fixtures/search3.json")))
             .mount(&server)
             .await;
-        let r = client_for(&server).await.search("aimer", 20).await.unwrap();
+        let r = client_for(&server).search("aimer", 20).await.unwrap();
         assert_eq!((r.artists.len(), r.albums.len(), r.songs.len()), (1, 2, 3));
     }
 
@@ -492,7 +489,7 @@ mod tests {
             )))
             .mount(&server)
             .await;
-        let songs = client_for(&server).await.get_starred_songs().await.unwrap();
+        let songs = client_for(&server).get_starred_songs().await.unwrap();
         assert_eq!(songs.len(), 2);
         assert!(songs.iter().all(|s| s.starred));
     }
@@ -508,7 +505,7 @@ mod tests {
                 .mount(&server)
                 .await;
         }
-        let c = client_for(&server).await;
+        let c = client_for(&server);
         c.star("so-1").await.unwrap();
         c.unstar("so-1").await.unwrap();
     }
@@ -525,7 +522,6 @@ mod tests {
             .mount(&server)
             .await;
         client_for(&server)
-            .await
             .scrobble("so-1", 1_700_000_000_000, true)
             .await
             .unwrap();
@@ -541,11 +537,7 @@ mod tests {
             .respond_with(ResponseTemplate::new(200).set_body_raw(bytes.clone(), "image/jpeg"))
             .mount(&server)
             .await;
-        let got = client_for(&server)
-            .await
-            .cover_art("al-1", 300)
-            .await
-            .unwrap();
+        let got = client_for(&server).cover_art("al-1", 300).await.unwrap();
         assert_eq!(got, bytes);
     }
 
@@ -559,11 +551,7 @@ mod tests {
             ))
             .mount(&server)
             .await;
-        let err = client_for(&server)
-            .await
-            .cover_art("x", 300)
-            .await
-            .unwrap_err();
+        let err = client_for(&server).cover_art("x", 300).await.unwrap_err();
         assert!(
             matches!(err, SubsonicError::Api { code: 70, .. }),
             "{err:?}"

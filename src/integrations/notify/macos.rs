@@ -12,9 +12,8 @@ pub struct MacNotifier {
 impl MacNotifier {
     /// Uses `SENRITSU_NOTIFIER_APP` when set, else `~/Applications/SenritsuNotifier.app`.
     pub fn from_env() -> Self {
-        let app_path = std::env::var_os("SENRITSU_NOTIFIER_APP")
-            .map(PathBuf::from)
-            .unwrap_or_else(default_app_path);
+        let app_path =
+            std::env::var_os("SENRITSU_NOTIFIER_APP").map_or_else(default_app_path, PathBuf::from);
         Self { app_path }
     }
 }

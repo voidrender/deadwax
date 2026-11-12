@@ -77,6 +77,10 @@ impl Shown {
         if self.paused {
             return self.position;
         }
+        #[expect(
+            clippy::cast_precision_loss,
+            reason = "an elapsed time in milliseconds fits in f64's mantissa"
+        )]
         let elapsed = (now_ms - self.at_ms).max(0) as f64 / 1000.0;
         let pos = self.position + elapsed;
         match self.song.as_ref().map(|s| f64::from(s.duration)) {
@@ -104,7 +108,7 @@ impl Shown {
 }
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
-    m.lock().unwrap_or_else(|e| e.into_inner())
+    m.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 impl<P: HubPorts + Sync + 'static> Hub<P> {
@@ -122,7 +126,7 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
     }
 
     /// `now_ms` is when the event happened, in unix milliseconds.
-    pub async fn on_event(&mut self, ev: &EngineEvent, now_ms: i64) {
+    pub fn on_event(&mut self, ev: &EngineEvent, now_ms: i64) {
         match ev {
             EngineEvent::TrackStarted(song) => {
                 self.cancel_lookup();
@@ -263,13 +267,12 @@ async fn lookup<P: HubPorts + Sync>(
     let release_mbid = match &song.album_id {
         Some(id) => {
             let known = lock(&mbids).get(id).cloned();
-            match known {
-                Some(m) => m,
-                None => {
-                    let found = ports.album_mbid(id).await;
-                    lock(&mbids).insert(id.clone(), found.clone());
-                    found
-                }
+            if let Some(m) = known {
+                m
+            } else {
+                let found = ports.album_mbid(id).await;
+                lock(&mbids).insert(id.clone(), found.clone());
+                found
             }
         }
         None => None,
@@ -297,6 +300,7 @@ async fn lookup<P: HubPorts + Sync>(
 }
 
 #[cfg(test)]
+#[allow(clippy::float_cmp, reason = "tests compare exact, known values")]
 mod tests {
     use super::*;
     use std::sync::atomic::Ordering::SeqCst;
@@ -430,9 +434,8 @@ mod tests {
     #[tokio::test]
     async fn track_start_notifies_with_cover_and_updates_presence() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 1000)
-            .await;
-        h.on_event(&playing(0.2), 1200).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 1000);
+        h.on_event(&playing(0.2), 1200);
         h.settle().await;
         let calls = ports.take();
 
@@ -463,7 +466,7 @@ mod tests {
         let mut pos = 0.2;
         while pos < 120.0 {
             pos += 0.5;
-            h.on_event(&playing(pos), 2000).await;
+            h.on_event(&playing(pos), 2000);
         }
         assert_eq!(
             scrobbles(&ports.take()),
@@ -477,25 +480,24 @@ mod tests {
     #[tokio::test]
     async fn pause_clears_presence_and_resume_restores() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
-            .await;
-        h.on_event(&playing(0.5), 0).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(&playing(0.5), 0);
         h.settle().await;
-        h.on_event(&playing(30.0), 0).await;
+        h.on_event(&playing(30.0), 0);
         ports.take();
 
-        h.on_event(&EngineEvent::PauseChanged(true), 0).await;
+        h.on_event(&EngineEvent::PauseChanged(true), 0);
         let calls = ports.take();
         assert_eq!(clears(&calls), 1);
         assert!(updates(&calls).is_empty());
 
-        h.on_event(&EngineEvent::PauseChanged(false), 0).await;
+        h.on_event(&EngineEvent::PauseChanged(false), 0);
         let ups = updates(&ports.take());
         assert_eq!(ups.len(), 1);
         assert_eq!(ups[0].position, 30.0);
         assert_eq!(ups[0].image_url.as_deref(), Some(PUBLIC_URL));
 
-        h.on_event(&EngineEvent::Seeked(90.0), 0).await;
+        h.on_event(&EngineEvent::Seeked(90.0), 0);
         let calls = ports.take();
         let ups = updates(&calls);
         assert_eq!(ups.len(), 1);
@@ -503,29 +505,27 @@ mod tests {
         // The image is reused, not looked up again.
         assert!(!calls.iter().any(|c| matches!(c, Call::PublicArt { .. })));
 
-        h.on_event(&EngineEvent::Stopped, 0).await;
+        h.on_event(&EngineEvent::Stopped, 0);
         assert_eq!(clears(&ports.take()), 1);
     }
 
     #[tokio::test]
     async fn restored_paused_track_waits_until_playing() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
-            .await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
         h.on_event(
             &EngineEvent::Position {
                 pos: 42.0,
                 paused: true,
             },
             0,
-        )
-        .await;
+        );
         let calls = ports.take();
         assert!(scrobbles(&calls).is_empty(), "{calls:?}");
         assert!(notifications(&calls).is_empty(), "{calls:?}");
         assert!(updates(&calls).is_empty(), "{calls:?}");
 
-        h.on_event(&EngineEvent::PauseChanged(false), 5000).await;
+        h.on_event(&EngineEvent::PauseChanged(false), 5000);
 
         h.settle().await;
         let calls = ports.take();
@@ -544,16 +544,14 @@ mod tests {
     #[tokio::test]
     async fn a_skipped_tracks_lookup_sends_nothing() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("slow"))), 0)
-            .await;
-        h.on_event(&playing(0.1), 0).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("slow"))), 0);
+        h.on_event(&playing(0.1), 0);
         // The lookup for s1 starts and waits on its cover.
         tokio::task::yield_now().await;
         let stale = lock(&h.shown).generation;
 
-        h.on_event(&EngineEvent::TrackStarted(song("s2", Some("al2"))), 0)
-            .await;
-        h.on_event(&playing(0.1), 0).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s2", Some("al2"))), 0);
+        h.on_event(&playing(0.1), 0);
         h.settle().await;
         ports.slow_cover.notify_waiters();
         for _ in 0..10 {
@@ -596,17 +594,16 @@ mod tests {
         };
         ports.clock.store(1000, SeqCst);
         let mut h = Hub::new(ports.clone());
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 900)
-            .await;
-        h.on_event(&playing(10.0), 1000).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 900);
+        h.on_event(&playing(10.0), 1000);
         h.settle().await;
         let ups = updates(&ports.take());
         assert_eq!(ups.len(), 1);
         assert_eq!(ups[0].position, 13.0);
 
         // While paused the position holds still.
-        h.on_event(&EngineEvent::PauseChanged(true), 5000).await;
-        h.on_event(&EngineEvent::PauseChanged(false), 9000).await;
+        h.on_event(&EngineEvent::PauseChanged(true), 5000);
+        h.on_event(&EngineEvent::PauseChanged(false), 9000);
         let ups = updates(&ports.take());
         assert_eq!(ups[0].position, 14.0);
     }
@@ -615,15 +612,13 @@ mod tests {
     async fn mbid_lookup_is_memoized() {
         let (mut h, ports) = hub();
         for id in ["s1", "s2"] {
-            h.on_event(&EngineEvent::TrackStarted(song(id, Some("al1"))), 0)
-                .await;
-            h.on_event(&playing(0.1), 0).await;
+            h.on_event(&EngineEvent::TrackStarted(song(id, Some("al1"))), 0);
+            h.on_event(&playing(0.1), 0);
             h.settle().await;
         }
         // No album id: nothing to look up.
-        h.on_event(&EngineEvent::TrackStarted(song("s3", None)), 0)
-            .await;
-        h.on_event(&playing(0.1), 0).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s3", None)), 0);
+        h.on_event(&playing(0.1), 0);
         h.settle().await;
         let calls = ports.take();
         let lookups: Vec<_> = calls
@@ -647,9 +642,8 @@ mod tests {
     #[tokio::test]
     async fn presence_never_contains_server_url() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
-            .await;
-        h.on_event(&playing(0.1), 0).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(&playing(0.1), 0);
         h.settle().await;
         let ups = updates(&ports.take());
         assert_eq!(ups.len(), 1);
@@ -664,11 +658,10 @@ mod tests {
             ..FakePorts::default()
         };
         let mut h = Hub::new(ports.clone());
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
-            .await;
-        h.on_event(&playing(0.1), 0).await;
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(&playing(0.1), 0);
         h.settle().await;
-        h.on_event(&EngineEvent::Seeked(10.0), 0).await;
+        h.on_event(&EngineEvent::Seeked(10.0), 0);
         let calls = ports.take();
         let ups = updates(&calls);
         assert_eq!(ups.len(), 2);

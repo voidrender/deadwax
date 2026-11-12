@@ -120,7 +120,7 @@ pub fn draw_picker(frame: &mut Frame, area: Rect, picker: &PickerState) {
         }
         Loadable::Failed(msg) => rows.push((format!("Couldn't load: {msg}"), String::new())),
         Loadable::NotLoaded | Loadable::Loading => {
-            rows.push(("Loading…".to_string(), String::new()))
+            rows.push(("Loading…".to_string(), String::new()));
         }
     }
     let shown = u16::try_from(rows.len())
