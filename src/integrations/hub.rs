@@ -23,6 +23,14 @@ pub trait HubPorts: Send {
     fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<String>>;
     fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>>;
     fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>>;
+
+    /// Unix time in milliseconds, used to age a position when presence is
+    /// sent after a slow lookup.
+    fn now_ms(&self) -> i64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+    }
 }
 
 /// Follows the engine and tells the scrobbler, the notifier, and Discord.
@@ -56,19 +64,40 @@ struct Shown {
     song: Option<Song>,
     /// Public art found for the song, reused on resume and seek.
     image_url: Option<String>,
+    /// Playback position at unix time `at_ms`.
     position: f64,
+    at_ms: i64,
     paused: bool,
 }
 
 impl Shown {
-    fn update(&self) -> Option<PresenceMsg> {
+    /// The position at `now_ms`, moved on by the time since it was recorded
+    /// unless paused.
+    fn position_at(&self, now_ms: i64) -> f64 {
+        if self.paused {
+            return self.position;
+        }
+        let elapsed = (now_ms - self.at_ms).max(0) as f64 / 1000.0;
+        let pos = self.position + elapsed;
+        match self.song.as_ref().map(|s| f64::from(s.duration)) {
+            Some(d) if d > 0.0 => pos.min(d),
+            _ => pos,
+        }
+    }
+
+    fn set_position(&mut self, pos: f64, now_ms: i64) {
+        self.position = pos;
+        self.at_ms = now_ms;
+    }
+
+    fn update(&self, now_ms: i64) -> Option<PresenceMsg> {
         let song = self.song.as_ref()?;
         Some(PresenceMsg::Update(PresenceInfo {
             title: song.title.clone(),
             artist: song.artist.clone(),
             album: song.album.clone(),
             image_url: self.image_url.clone(),
-            position: self.position,
+            position: self.position_at(now_ms),
             duration: song.duration,
         }))
     }
@@ -92,6 +121,7 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
         }
     }
 
+    /// `now_ms` is when the event happened, in unix milliseconds.
     pub async fn on_event(&mut self, ev: &EngineEvent, now_ms: i64) {
         match ev {
             EngineEvent::TrackStarted(song) => {
@@ -103,13 +133,13 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
                 shown.generation += 1;
                 shown.song = Some(song.clone());
                 shown.image_url = None;
-                shown.position = 0.0;
+                shown.set_position(0.0, now_ms);
             }
             &EngineEvent::Position { pos, paused } => {
                 self.last_pos = pos;
                 {
                     let mut shown = lock(&self.shown);
-                    shown.position = pos;
+                    shown.set_position(pos, now_ms);
                     shown.paused = paused;
                 }
                 if !self.announced && !paused {
@@ -124,21 +154,25 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
             &EngineEvent::Seeked(pos) => {
                 self.last_pos = pos;
                 let mut shown = lock(&self.shown);
-                shown.position = pos;
+                shown.set_position(pos, now_ms);
                 if self.announced && !shown.paused {
-                    self.send_update(&shown);
+                    self.send_update(&shown, now_ms);
                 }
             }
             EngineEvent::PauseChanged(true) => {
-                lock(&self.shown).paused = true;
+                let mut shown = lock(&self.shown);
+                let pos = shown.position_at(now_ms);
+                shown.set_position(pos, now_ms);
+                shown.paused = true;
                 self.ports.presence(PresenceMsg::Clear);
             }
             EngineEvent::PauseChanged(false) => {
                 {
                     let mut shown = lock(&self.shown);
+                    shown.at_ms = now_ms;
                     shown.paused = false;
                     if self.announced {
-                        self.send_update(&shown);
+                        self.send_update(&shown, now_ms);
                     }
                 }
                 if !self.announced {
@@ -159,8 +193,8 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
         }
     }
 
-    fn send_update(&self, shown: &Shown) {
-        if let Some(m) = shown.update() {
+    fn send_update(&self, shown: &Shown, now_ms: i64) {
+        if let Some(m) = shown.update(now_ms) {
             self.ports.presence(m);
         }
     }
@@ -256,7 +290,7 @@ async fn lookup<P: HubPorts + Sync>(
     }
     current.image_url = image_url;
     if !current.paused
-        && let Some(m) = current.update()
+        && let Some(m) = current.update(ports.now_ms())
     {
         ports.presence(m);
     }
@@ -265,6 +299,7 @@ async fn lookup<P: HubPorts + Sync>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::Ordering::SeqCst;
 
     const PUBLIC_URL: &str = "https://coverartarchive.org/release/m1/front-500.jpg";
     const SERVER: &str = "music.example";
@@ -284,6 +319,10 @@ mod tests {
         no_public_art: bool,
         /// The cover named "slow" waits for this before it is returned.
         slow_cover: Arc<tokio::sync::Notify>,
+        /// The fake clock, in unix milliseconds.
+        clock: Arc<std::sync::atomic::AtomicI64>,
+        /// How far the clock moves during a public art lookup.
+        art_delay_ms: i64,
     }
 
     impl FakePorts {
@@ -326,7 +365,11 @@ mod tests {
                 mbid: q.release_mbid.clone(),
             });
             let url = (!self.no_public_art).then(|| PUBLIC_URL.to_string());
+            self.clock.fetch_add(self.art_delay_ms, SeqCst);
             Box::pin(async move { url })
+        }
+        fn now_ms(&self) -> i64 {
+            self.clock.load(SeqCst)
         }
     }
 
@@ -543,6 +586,29 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn late_presence_accounts_for_lookup_time() {
+        let ports = FakePorts {
+            art_delay_ms: 3000,
+            ..FakePorts::default()
+        };
+        ports.clock.store(1000, SeqCst);
+        let mut h = Hub::new(ports.clone());
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 900)
+            .await;
+        h.on_event(&playing(10.0), 1000).await;
+        h.settle().await;
+        let ups = updates(&ports.take());
+        assert_eq!(ups.len(), 1);
+        assert_eq!(ups[0].position, 13.0);
+
+        // While paused the position holds still.
+        h.on_event(&EngineEvent::PauseChanged(true), 5000).await;
+        h.on_event(&EngineEvent::PauseChanged(false), 9000).await;
+        let ups = updates(&ports.take());
+        assert_eq!(ups[0].position, 14.0);
     }
 
     #[tokio::test]

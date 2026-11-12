@@ -113,9 +113,9 @@ pub struct Ctx {
     playlist_rx: Option<mpsc::UnboundedReceiver<Job>>,
     /// The app's session, mirrored so the worker can drop stale jobs.
     session: Arc<AtomicU64>,
-    /// Engine events are copied here for the integration hub. `None` until
-    /// `run` starts it.
-    hub: Option<mpsc::UnboundedSender<EngineEvent>>,
+    /// Engine events are copied here for the integration hub, stamped with
+    /// the unix time they arrived. `None` until `run` starts it.
+    hub: Option<mpsc::UnboundedSender<(EngineEvent, i64)>>,
     /// Where the queue is saved. `None` turns saving and restoring off.
     state_path: Option<PathBuf>,
 }
@@ -226,7 +226,7 @@ where
             ev = ctx.engine_events.recv(), if engine_open => match ev {
                 Some(ev) => {
                     if let Some(hub) = &ctx.hub {
-                        let _ = hub.send(ev.clone());
+                        let _ = hub.send((ev.clone(), unix_ms()));
                     }
                     AppEvent::Engine(ev)
                 }
@@ -963,10 +963,10 @@ fn start_services(ctx: &mut Ctx) -> Services {
 /// only hold up the hub, never the UI.
 async fn hub_task<P: HubPorts + Sync + 'static>(
     mut hub: Hub<P>,
-    mut rx: mpsc::UnboundedReceiver<EngineEvent>,
+    mut rx: mpsc::UnboundedReceiver<(EngineEvent, i64)>,
 ) {
-    while let Some(ev) = rx.recv().await {
-        hub.on_event(&ev, unix_ms()).await;
+    while let Some((ev, at_ms)) = rx.recv().await {
+        hub.on_event(&ev, at_ms).await;
     }
 }
 
