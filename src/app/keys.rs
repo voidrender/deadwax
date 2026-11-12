@@ -87,7 +87,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("f", "Toggle favorite on selected song"),
     ("a", "Add selected song(s) to a playlist"),
     ("o", "Change the sort order of the list"),
-    ("n i D", "New / rename / delete playlist"),
+    ("n E D", "New / rename / delete playlist"),
     ("d J K", "Remove / move track in a playlist"),
     ("j k h l", "Move in lists and columns"),
     ("Enter", "Play from selection"),

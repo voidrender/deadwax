@@ -438,7 +438,7 @@ impl App {
                 });
                 Vec::new()
             }
-            KeyCode::Char('i') => {
+            KeyCode::Char('E') => {
                 if let Some(p) = pl.selected_list() {
                     self.popup = Some(Popup::TextInput {
                         title: "Rename playlist".into(),
@@ -845,7 +845,7 @@ mod tests {
         key(&mut app, KeyCode::Esc);
         assert!(app.popup.is_none());
 
-        press(&mut app, 'i');
+        press(&mut app, 'E');
         for _ in 0..3 {
             key(&mut app, KeyCode::Backspace);
         }

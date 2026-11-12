@@ -163,7 +163,7 @@ The queue, search results, and the tracks inside a playlist keep their own order
 
 | Key | Action |
 |---|---|
-| `n` `i` `D` | New / rename / delete playlist (Playlists, either column; rename and delete act on the highlighted playlist) |
+| `n` `E` `D` | New / rename / delete playlist (Playlists, either column; rename and delete act on the highlighted playlist) |
 | `d` | Remove the selected track (Playlists track column, Queue) |
 | `J` `K` | Move the selected track down / up (Playlists track column, Queue) |
 | `c` | Clear the queue (asks to confirm) |
