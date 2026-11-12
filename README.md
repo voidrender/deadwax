@@ -4,7 +4,7 @@ Senritsu is a terminal music player for Navidrome and other Subsonic servers. It
 
 ## Requirements
 
-- Rust (edition 2024, so a recent stable toolchain)
+- Rust 1.90 or newer
 - mpv on your `PATH`
   - macOS: `brew install mpv`
   - Arch: `sudo pacman -S mpv`
