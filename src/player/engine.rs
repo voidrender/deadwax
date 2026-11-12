@@ -302,10 +302,10 @@ impl<B: AudioBackend> Engine<B> {
             let advanced = self.queue.advance().map(|i| i.uid);
             if advanced != Some(next_uid) {
                 // The queue and the backend disagree about what comes next.
-                // Load whatever the queue says is current.
+                // Load whatever the queue says is current. The loaded ids
+                // stay recorded so that, when the queue has ended, stopping
+                // still halts the stale track mpv just started.
                 tracing::warn!("preloaded track does not match the queue; reloading");
-                self.loaded_current = None;
-                self.loaded_next = None;
                 self.play_current(None, self.status == Status::Paused, ev)
                     .await;
                 return;
@@ -664,6 +664,7 @@ mod tests {
         next_id: i64,
         fail_restart: bool,
         fail_load: bool,
+        fail_remove: bool,
     }
 
     impl AudioBackend for FakeBackend {
@@ -677,6 +678,9 @@ mod tests {
         }
         async fn remove_entry(&mut self, id: EntryId) -> anyhow::Result<()> {
             self.calls.push(Call::Remove(id));
+            if self.fail_remove {
+                anyhow::bail!("mpv get_property: no reply");
+            }
             Ok(())
         }
         async fn set_pause(&mut self, paused: bool) -> anyhow::Result<()> {
@@ -885,6 +889,21 @@ mod tests {
         e.handle_command(PlayerCommand::PlayNext(vec![song("x")]))
             .await;
         assert_eq!(e.backend.calls, [Call::Remove(2), append("u:x")]);
+    }
+
+    #[tokio::test]
+    async fn stale_preload_at_queue_end_stops_backend() {
+        let mut e = playing(2).await;
+        e.backend.fail_remove = true;
+        // Removing the last item cannot drop its preload from mpv.
+        e.handle_command(PlayerCommand::Remove(1)).await;
+        assert_eq!(e.backend.calls, [Call::Remove(2)]);
+        e.backend.calls.clear();
+        e.handle_backend(ended(1, EndReason::Eof)).await;
+        let ev = e.handle_backend(BackendEvent::FileStarted(2)).await;
+        assert_eq!(ev, [EngineEvent::Stopped]);
+        assert_eq!(e.backend.calls, [Call::Stop]);
+        assert_eq!(e.snapshot().status, Status::Stopped);
     }
 
     #[tokio::test]
