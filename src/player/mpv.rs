@@ -110,6 +110,7 @@ impl MpvBackend {
     async fn command(&mut self, args: Value) -> anyhow::Result<Value> {
         let name = args
             .get(0)
+            .or_else(|| args.get("name"))
             .and_then(Value::as_str)
             .unwrap_or("command")
             .to_owned();
@@ -166,7 +167,14 @@ impl AudioBackend for MpvBackend {
             LoadMode::Replace { start, .. } => ("replace", start),
             LoadMode::Append => ("append", None),
         };
-        let args = json!(["loadfile", url, flag, -1, file_options(start, title)]);
+        // Named arguments, because mpv 0.38 inserted an `index` argument
+        // before `options`. The positional form can't work on both sides.
+        let args = json!({
+            "name": "loadfile",
+            "url": url,
+            "flags": flag,
+            "options": file_options(start, title),
+        });
         let data = self.command(args).await?;
         let id = data
             .get("playlist_entry_id")
