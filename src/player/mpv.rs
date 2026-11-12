@@ -136,8 +136,19 @@ impl MpvBackend {
     }
 }
 
+/// Per-file options for `loadfile`. The title uses mpv's `%len%` quoting
+/// (length in bytes), so commas and equals signs in it stay literal.
+fn file_options(start: Option<f64>, title: &str) -> String {
+    let mut opts = String::new();
+    if let Some(s) = start.filter(|s| s.is_finite() && *s > 0.0) {
+        opts.push_str(&format!("start={s},"));
+    }
+    opts.push_str(&format!("force-media-title=%{}%{title}", title.len()));
+    opts
+}
+
 impl AudioBackend for MpvBackend {
-    async fn load(&mut self, url: &str, mode: LoadMode) -> anyhow::Result<EntryId> {
+    async fn load(&mut self, url: &str, title: &str, mode: LoadMode) -> anyhow::Result<EntryId> {
         // Pause is set globally rather than as a per-file option: mpv resets
         // per-file options when a file ends, which would carry the load-time
         // pause state into the next gapless track. Pausing goes before the
@@ -150,13 +161,11 @@ impl AudioBackend for MpvBackend {
             LoadMode::Replace { paused: false, .. } => true,
             LoadMode::Append => false,
         };
-        let args = match mode {
-            LoadMode::Replace { start, .. } => match start.filter(|s| s.is_finite() && *s > 0.0) {
-                Some(s) => json!(["loadfile", url, "replace", -1, format!("start={s}")]),
-                None => json!(["loadfile", url, "replace"]),
-            },
-            LoadMode::Append => json!(["loadfile", url, "append"]),
+        let (flag, start) = match mode {
+            LoadMode::Replace { start, .. } => ("replace", start),
+            LoadMode::Append => ("append", None),
         };
+        let args = json!(["loadfile", url, flag, -1, file_options(start, title)]);
         let data = self.command(args).await?;
         let id = data
             .get("playlist_entry_id")
@@ -230,9 +239,16 @@ impl Conn {
                 "--audio-display=no",
                 "--gapless-audio=weak",
                 "--prefetch-playlist=yes",
-                // User config still loads, but keep-open would pause at the
-                // end of a file instead of ending it.
+                // User config still loads (for the audio device), but these
+                // would change how files end or repeat, or hand the stream
+                // URL to scripts.
                 "--keep-open=no",
+                "--load-scripts=no",
+                "--ytdl=no",
+                "--resume-playback=no",
+                "--save-position-on-quit=no",
+                "--loop-file=no",
+                "--loop-playlist=no",
             ])
             .arg(format!("--input-ipc-server={}", socket.display()))
             .arg(format!("--volume={volume}"))
@@ -462,6 +478,20 @@ fn parse_event(msg: &Value, idle: &mut Option<bool>) -> Option<BackendEvent> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn file_options_quote_the_title_by_byte_length() {
+        let title = "Roygbiv, Pt. 2 = \"Live\" · 旋律";
+        assert_eq!(
+            file_options(None, title),
+            format!("force-media-title=%{}%{title}", title.len())
+        );
+        assert_eq!(
+            file_options(Some(1.5), "a,b=c"),
+            "start=1.5,force-media-title=%5%a,b=c"
+        );
+        assert_eq!(file_options(Some(f64::NAN), ""), "force-media-title=%0%");
+    }
     use tokio::io::AsyncWriteExt;
 
     #[test]

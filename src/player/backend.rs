@@ -40,9 +40,12 @@ pub enum BackendEvent {
 /// The audio output the player engine drives. Events arrive on the receiver
 /// returned when the backend is created.
 pub trait AudioBackend: Send {
+    /// Loads `url`. `title` is the name the backend reports for the file, so
+    /// the stream URL never stands in for it.
     fn load(
         &mut self,
         url: &str,
+        title: &str,
         mode: LoadMode,
     ) -> impl Future<Output = anyhow::Result<EntryId>> + Send;
     fn remove_entry(&mut self, id: EntryId) -> impl Future<Output = anyhow::Result<()>> + Send;

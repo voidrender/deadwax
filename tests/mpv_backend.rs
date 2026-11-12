@@ -104,8 +104,8 @@ async fn plays_two_files_gaplessly() {
     }
     let f = fixture();
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    let e1 = mpv.load(&f.a, PLAY).await.unwrap();
-    let e2 = mpv.load(&f.b, LoadMode::Append).await.unwrap();
+    let e1 = mpv.load(&f.a, "t", PLAY).await.unwrap();
+    let e2 = mpv.load(&f.b, "t", LoadMode::Append).await.unwrap();
     assert_ne!(e1, e2);
 
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e2)).await;
@@ -130,7 +130,7 @@ async fn pause_emits_paused() {
     }
     let f = fixture();
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    let e1 = mpv.load(&f.a, PLAY).await.unwrap();
+    let e1 = mpv.load(&f.a, "t", PLAY).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e1)).await;
     assert!(ok, "never started: {seen:?}");
     mpv.set_pause(true).await.unwrap();
@@ -145,8 +145,8 @@ async fn remove_entry_drops_next() {
     }
     let f = fixture();
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    let e1 = mpv.load(&f.a, PLAY).await.unwrap();
-    let e2 = mpv.load(&f.b, LoadMode::Append).await.unwrap();
+    let e1 = mpv.load(&f.a, "t", PLAY).await.unwrap();
+    let e2 = mpv.load(&f.b, "t", LoadMode::Append).await.unwrap();
     mpv.remove_entry(e2).await.unwrap();
 
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::Idle).await;
@@ -191,6 +191,7 @@ async fn load_with_start_seeks() {
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
     mpv.load(
         &f.a,
+        "t",
         LoadMode::Replace {
             start: Some(0.5),
             paused: false,
@@ -215,8 +216,8 @@ async fn pause_persists_across_transition() {
     }
     let f = fixture();
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    let e1 = mpv.load(&f.a, PLAY).await.unwrap();
-    let e2 = mpv.load(&f.b, LoadMode::Append).await.unwrap();
+    let e1 = mpv.load(&f.a, "t", PLAY).await.unwrap();
+    let e2 = mpv.load(&f.b, "t", LoadMode::Append).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::PlaybackRestart).await;
     assert!(ok, "never started: {seen:?}");
     assert!(seen.contains(&BackendEvent::FileStarted(e1)));
@@ -249,14 +250,14 @@ async fn replace_from_pause_unpauses_after_the_new_file_starts() {
     }
     let f = fixture();
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    mpv.load(&f.a, PLAY).await.unwrap();
+    mpv.load(&f.a, "t", PLAY).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::PlaybackRestart).await;
     assert!(ok, "never started: {seen:?}");
     mpv.set_pause(true).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::Paused(true)).await;
     assert!(ok, "never paused: {seen:?}");
 
-    let e2 = mpv.load(&f.b, PLAY).await.unwrap();
+    let e2 = mpv.load(&f.b, "t", PLAY).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e2)).await;
     assert!(ok, "never started the new file: {seen:?}");
     assert!(
@@ -267,6 +268,64 @@ async fn replace_from_pause_unpauses_after_the_new_file_starts() {
     assert!(ok, "the new track never unpaused: {seen:?}");
 }
 
+/// Reads one property over a second connection to mpv's socket.
+async fn get_property(socket: &Path, name: &str) -> serde_json::Value {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let stream = tokio::net::UnixStream::connect(socket).await.unwrap();
+    let (read, mut write) = stream.into_split();
+    let line = serde_json::json!({ "command": ["get_property", name], "request_id": 99 });
+    write
+        .write_all(format!("{line}\n").as_bytes())
+        .await
+        .unwrap();
+    let mut lines = BufReader::new(read).lines();
+    loop {
+        let line = tokio::time::timeout(WAIT, lines.next_line())
+            .await
+            .expect("no reply")
+            .unwrap()
+            .expect("socket closed");
+        let reply: serde_json::Value = serde_json::from_str(&line).unwrap();
+        if reply["request_id"] == 99 {
+            assert_eq!(reply["error"], "success", "{reply}");
+            return reply["data"].clone();
+        }
+    }
+}
+
+/// The title mpv reports (to scripts, MPRIS, and the OS) is the forced one,
+/// never the stream URL, even with commas, equals signs, and quotes in it.
+#[tokio::test]
+async fn media_title_is_the_forced_title() {
+    if skip() {
+        return;
+    }
+    let f = fixture();
+    let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
+    let first = "Roygbiv, Pt. 2 = \"Live\" · 旋律";
+    let second = "a,b=c · %3%x";
+    let e1 = mpv
+        .load(
+            &f.a,
+            first,
+            LoadMode::Replace {
+                start: None,
+                paused: true,
+            },
+        )
+        .await
+        .unwrap();
+    let e2 = mpv.load(&f.b, second, LoadMode::Append).await.unwrap();
+    let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e1)).await;
+    assert!(ok, "never started: {seen:?}");
+    let socket = mpv.socket_path().unwrap().to_path_buf();
+    assert_eq!(get_property(&socket, "media-title").await, first);
+    mpv.set_pause(false).await.unwrap();
+    let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e2)).await;
+    assert!(ok, "never reached the next track: {seen:?}");
+    assert_eq!(get_property(&socket, "media-title").await, second);
+}
+
 #[tokio::test]
 async fn missing_file_reports_error() {
     if skip() {
@@ -275,7 +334,7 @@ async fn missing_file_reports_error() {
     let f = fixture();
     let missing = f.a.replace("a.wav", "missing.wav");
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    let e1 = mpv.load(&missing, PLAY).await.unwrap();
+    let e1 = mpv.load(&missing, "t", PLAY).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| {
         matches!(e, BackendEvent::FileEnded { entry, reason: EndReason::Error(_) } if *entry == e1)
     })
@@ -294,7 +353,7 @@ async fn restart_keeps_events_without_crash() {
     mpv.restart().await.unwrap();
     assert_ne!(mpv.pid(), old_pid);
 
-    let e1 = mpv.load(&f.a, PLAY).await.unwrap();
+    let e1 = mpv.load(&f.a, "t", PLAY).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e1)).await;
     assert!(ok, "no events after restart: {seen:?}");
     assert!(
@@ -310,7 +369,7 @@ async fn stop_ends_playback_without_crash() {
     }
     let f = fixture();
     let (mut mpv, mut rx) = MpvBackend::spawn(0).await.unwrap();
-    let e1 = mpv.load(&f.a, PLAY).await.unwrap();
+    let e1 = mpv.load(&f.a, "t", PLAY).await.unwrap();
     let (seen, ok) = collect_until(&mut rx, WAIT, |e| *e == BackendEvent::FileStarted(e1)).await;
     assert!(ok, "never started: {seen:?}");
     mpv.stop().await.unwrap();

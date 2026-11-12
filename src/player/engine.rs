@@ -555,7 +555,11 @@ impl<B: AudioBackend> Engine<B> {
         self.loaded_next = None;
         match self
             .backend
-            .load(&url, LoadMode::Replace { start, paused })
+            .load(
+                &url,
+                &media_title(&song),
+                LoadMode::Replace { start, paused },
+            )
             .await
         {
             Ok(id) => {
@@ -620,7 +624,8 @@ impl<B: AudioBackend> Engine<B> {
         }
         if let Some((uid, song)) = want {
             let url = (self.url_for)(&song);
-            match self.backend.load(&url, LoadMode::Append).await {
+            let title = media_title(&song);
+            match self.backend.load(&url, &title, LoadMode::Append).await {
                 Ok(id) => self.loaded_next = Some((id, uid)),
                 Err(e) => tracing::warn!(song_id = %song.id, "preload failed: {e:#}"),
             }
@@ -688,6 +693,15 @@ pub async fn run<B: AudioBackend>(
     }
 }
 
+/// The title the backend reports for a song: `title · artist`.
+fn media_title(song: &crate::subsonic::Song) -> String {
+    if song.artist.is_empty() {
+        song.title.clone()
+    } else {
+        format!("{} · {}", song.title, song.artist)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -709,6 +723,8 @@ mod tests {
     #[derive(Default)]
     struct FakeBackend {
         calls: Vec<Call>,
+        /// The media title passed with each load, in call order.
+        titles: Vec<String>,
         next_id: i64,
         fail_restart: bool,
         fail_load: bool,
@@ -716,8 +732,14 @@ mod tests {
     }
 
     impl AudioBackend for FakeBackend {
-        async fn load(&mut self, url: &str, mode: LoadMode) -> anyhow::Result<EntryId> {
+        async fn load(
+            &mut self,
+            url: &str,
+            title: &str,
+            mode: LoadMode,
+        ) -> anyhow::Result<EntryId> {
             self.calls.push(Call::Load(url.into(), mode));
+            self.titles.push(title.into());
             if self.fail_load {
                 anyhow::bail!("mpv loadfile: no reply");
             }
@@ -836,6 +858,19 @@ mod tests {
         assert_eq!(e.snapshot().status, Status::Playing);
         let ev = e.handle_backend(BackendEvent::FileStarted(1)).await;
         assert_eq!(ev, [EngineEvent::TrackStarted(song("0"))]);
+    }
+
+    #[tokio::test]
+    async fn loads_name_the_track_and_artist() {
+        let mut e = engine();
+        let mut list = songs(2);
+        list[0].artist = "Boards of Canada".into();
+        e.handle_command(PlayerCommand::PlayQueue {
+            songs: list,
+            start: 0,
+        })
+        .await;
+        assert_eq!(e.backend.titles, ["t0 · Boards of Canada", "t1"]);
     }
 
     #[tokio::test]
