@@ -4,14 +4,14 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use senritsu::app::App;
+use senritsu::credentials::{CredentialStore, KeyringBackend};
 use senritsu::player::mpv::{MpvBackend, mpv_available};
 use senritsu::player::{UrlFor, spawn_engine};
-use senritsu::runtime::{self, Ctx};
+use senritsu::runtime::{self, Ctx, SharedClient};
 use senritsu::{logging, paths};
 use std::io::{Stdout, stdout};
 use std::process::ExitCode;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 
 const MPV_MISSING: &str =
     "Senritsu needs mpv. Install it with: brew install mpv (macOS) or sudo pacman -S mpv (Arch)";
@@ -39,14 +39,27 @@ async fn main() -> ExitCode {
 
 async fn run() -> anyhow::Result<()> {
     let (backend, backend_events) = MpvBackend::spawn(100).await?;
-    // Placeholder until the Subsonic client is wired in at login.
-    let url_for: UrlFor = Arc::new(|_| String::new());
+    let (app, client) = runtime::startup(
+        &runtime::config_path(),
+        &CredentialStore::new(KeyringBackend, runtime::credentials_path()),
+    );
+    let shared: SharedClient = Arc::new(RwLock::new(client));
+    // Reads the client at call time so a login or logout takes effect
+    // without respawning the engine. Empty while logged out.
+    let url_for: UrlFor = {
+        let shared = shared.clone();
+        Arc::new(move |song| {
+            runtime::current_client(&shared)
+                .map(|c| c.stream_url(&song.id))
+                .unwrap_or_default()
+        })
+    };
     let engine = spawn_engine(backend, backend_events, url_for);
-    let ctx = Ctx::new(None, engine.commands, engine.snapshot, engine.events);
+    let ctx = Ctx::new(shared, engine.commands, engine.snapshot, engine.events);
 
     install_panic_hook();
     let mut terminal = enter_terminal()?;
-    let result = runtime::run(&mut terminal, App::new(), ctx).await;
+    let result = runtime::run(&mut terminal, app, ctx).await;
     restore_terminal();
     result
 }

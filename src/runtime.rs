@@ -1,12 +1,18 @@
-use crate::app::{App, AppEvent, Effect};
+use crate::app::login::login_error_message;
+use crate::app::{ApiResult, App, AppEvent, Effect};
+use crate::config::Config;
+use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
+use crate::paths;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
-use crate::subsonic::SubsonicClient;
+use crate::subsonic::{Auth, SubsonicClient};
 use crate::ui;
 use crossterm::event::{Event, EventStream};
 use futures::{Stream, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
@@ -37,10 +43,41 @@ const TICK: Duration = Duration::from_millis(250);
 /// How long quitting waits for the engine to stop mpv.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 
+/// The logged-in client, shared with the engine's `url_for`. `None` while
+/// logged out.
+pub type SharedClient = Arc<RwLock<Option<SubsonicClient>>>;
+
+/// Reads the shared client. A poisoned lock still holds a usable value.
+pub fn current_client(shared: &SharedClient) -> Option<SubsonicClient> {
+    shared
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .cloned()
+}
+
+fn set_client(shared: &SharedClient, client: Option<SubsonicClient>) {
+    *shared.write().unwrap_or_else(|e| e.into_inner()) = client;
+}
+
+pub fn config_path() -> PathBuf {
+    paths::config_dir().join("config.toml")
+}
+
+pub fn credentials_path() -> PathBuf {
+    paths::config_dir().join("credentials.toml")
+}
+
+fn credential_store(path: &Path) -> CredentialStore<KeyringBackend> {
+    CredentialStore::new(KeyringBackend, path.to_path_buf())
+}
+
 /// Everything the runtime loop and effect executor need.
 pub struct Ctx {
     /// `None` until a server is configured and logged in.
-    pub client: Option<SubsonicClient>,
+    pub client: SharedClient,
+    pub config_path: PathBuf,
+    pub credentials_path: PathBuf,
     pub player: mpsc::UnboundedSender<PlayerCommand>,
     /// Spawned work reports back through this sender.
     pub tx: mpsc::UnboundedSender<AppEvent>,
@@ -51,7 +88,7 @@ pub struct Ctx {
 
 impl Ctx {
     pub fn new(
-        client: Option<SubsonicClient>,
+        client: SharedClient,
         player: mpsc::UnboundedSender<PlayerCommand>,
         snapshot: watch::Receiver<PlayerSnapshot>,
         engine_events: mpsc::UnboundedReceiver<EngineEvent>,
@@ -59,6 +96,8 @@ impl Ctx {
         let (tx, rx) = mpsc::unbounded_channel();
         Self {
             client,
+            config_path: config_path(),
+            credentials_path: credentials_path(),
             player,
             tx,
             rx,
@@ -132,6 +171,9 @@ where
                 }
             },
         };
+        if let AppEvent::Api(ApiResult::LoggedIn { client, .. }) = &ev {
+            set_client(&ctx.client, Some(client.clone()));
+        }
         for effect in app.handle_event(ev) {
             execute(effect, &mut app, ctx);
         }
@@ -151,7 +193,146 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             }
         }
         Effect::Quit => app.should_quit = true,
+        Effect::Login {
+            server,
+            username,
+            password,
+        } => {
+            let tx = ctx.tx.clone();
+            let config_path = ctx.config_path.clone();
+            let credentials_path = ctx.credentials_path.clone();
+            tokio::spawn(async move {
+                let result = login(&config_path, &credentials_path, server, username, password)
+                    .await
+                    .unwrap_or_else(ApiResult::LoginFailed);
+                let _ = tx.send(AppEvent::Api(result));
+            });
+        }
+        Effect::Logout => logout(app, ctx),
     }
+}
+
+/// Checks the credentials against the server, then stores them. Errors are
+/// user-facing messages and never carry the password or a URL.
+async fn login(
+    config_path: &Path,
+    credentials_path: &Path,
+    server: String,
+    username: String,
+    password: String,
+) -> Result<ApiResult, String> {
+    let client = SubsonicClient::new(&server, &username, Auth::Password(password.clone()))
+        .map_err(|e| login_error_message(&e))?;
+    client.ping().await.map_err(|e| login_error_message(&e))?;
+
+    let credentials_path = credentials_path.to_path_buf();
+    let (save_server, save_user) = (server.clone(), username.clone());
+    let saved_to = tokio::task::spawn_blocking(move || {
+        credential_store(&credentials_path).save(&save_server, &save_user, &password)
+    })
+    .await
+    .map_err(|_| "Couldn't save the login".to_string())?
+    .map_err(|e| {
+        tracing::warn!("saving credentials failed: {e:#}");
+        "Couldn't save the login".to_string()
+    })?;
+
+    save_config(config_path, &server, &username).map_err(|e| {
+        tracing::warn!("saving config failed: {e:#}");
+        "Couldn't save the config file".to_string()
+    })?;
+    Ok(ApiResult::LoggedIn { client, saved_to })
+}
+
+/// Writes the server and username, keeping any other settings already in the
+/// file.
+fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> {
+    let existing = Config::load(path).unwrap_or_else(|e| {
+        tracing::warn!("ignoring unreadable config: {e:#}");
+        None
+    });
+    let config = match existing {
+        Some(c) => Config {
+            server_url: server.to_string(),
+            username: username.to_string(),
+            ..c
+        },
+        None => Config {
+            server_url: server.to_string(),
+            username: username.to_string(),
+            discord_app_id: None,
+            discord_default_image: "senritsu".to_string(),
+            image_protocol: None,
+        },
+    };
+    config.save(path)
+}
+
+/// Stops playback, forgets the stored login and the client, and returns to
+/// the login screen. The server URL stays in the config for next time.
+fn logout(app: &mut App, ctx: &Ctx) {
+    let _ = ctx.player.send(PlayerCommand::Clear);
+    let config = Config::load(&ctx.config_path).ok().flatten();
+    let (server, username) = match current_client(&ctx.client) {
+        Some(c) => (c.server_url().to_string(), c.username().to_string()),
+        None => config
+            .as_ref()
+            .map(|c| (c.server_url.clone(), c.username.clone()))
+            .unwrap_or_default(),
+    };
+    let mut problem = None;
+    if let Err(e) = credential_store(&ctx.credentials_path).clear(&server, &username) {
+        tracing::warn!("clearing credentials failed: {e:#}");
+        problem = Some("Couldn't remove the saved login");
+    }
+    set_client(&ctx.client, None);
+    if let Some(c) = config
+        && let Err(e) = (Config {
+            username: String::new(),
+            ..c
+        })
+        .save(&ctx.config_path)
+    {
+        tracing::warn!("updating config failed: {e:#}");
+        problem = Some("Couldn't update the config file");
+    }
+    app.show_login(&server, "");
+    if let Some(msg) = problem {
+        app.set_status(msg);
+    }
+}
+
+/// Picks the first screen. A saved server, username and login that builds a
+/// client skips the login form. Anything else opens it, prefilled with what
+/// the config remembers.
+pub fn startup<S: SecretBackend>(
+    config_path: &Path,
+    store: &CredentialStore<S>,
+) -> (App, Option<SubsonicClient>) {
+    let config = Config::load(config_path).unwrap_or_else(|e| {
+        tracing::warn!("ignoring unreadable config: {e:#}");
+        None
+    });
+    let Some(config) = config else {
+        return (App::login_screen("", ""), None);
+    };
+    if !config.username.is_empty() {
+        let auth = store
+            .load(&config.server_url, &config.username)
+            .unwrap_or_else(|e| {
+                tracing::warn!("loading credentials failed: {e:#}");
+                None
+            });
+        if let Some(auth) = auth
+            && let Ok(client) = SubsonicClient::new(&config.server_url, &config.username, auth)
+        {
+            return (App::logged_in(client.server_url()), Some(client));
+        }
+    }
+    (
+        App::login_screen(&config.server_url, &config.username),
+        None,
+    )
 }
 
 /// Asks the engine to stop and waits briefly for it to finish, which drops
@@ -172,13 +353,112 @@ async fn shutdown_engine(ctx: &mut Ctx) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::credentials::SecretError;
     use ratatui::backend::TestBackend;
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    struct MemSecrets(RefCell<HashMap<String, String>>);
+
+    impl SecretBackend for MemSecrets {
+        fn get(&self, account: &str) -> Result<Option<String>, SecretError> {
+            Ok(self.0.borrow().get(account).cloned())
+        }
+        fn set(&self, account: &str, secret: &str) -> Result<(), SecretError> {
+            self.0.borrow_mut().insert(account.into(), secret.into());
+            Ok(())
+        }
+        fn delete(&self, account: &str) -> Result<(), SecretError> {
+            self.0.borrow_mut().remove(account);
+            Ok(())
+        }
+    }
+
+    fn config(server: &str, user: &str) -> Config {
+        Config {
+            server_url: server.into(),
+            username: user.into(),
+            discord_app_id: Some("42".into()),
+            discord_default_image: "custom".into(),
+            image_protocol: Some("kitty".into()),
+        }
+    }
+
+    #[test]
+    fn startup_without_config_opens_empty_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("c.toml"));
+        let (app, client) = startup(&dir.path().join("config.toml"), &store);
+        assert_eq!(app.screen, crate::app::Screen::Login);
+        assert!(client.is_none());
+        assert!(app.login.server.is_empty());
+    }
+
+    #[test]
+    fn startup_with_config_and_credentials_goes_to_main() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config("https://m.example", "alice").save(&path).unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("c.toml"));
+        store.save("https://m.example", "alice", "pw").unwrap();
+        let (app, client) = startup(&path, &store);
+        assert_eq!(app.screen, crate::app::Screen::Main);
+        assert_eq!(app.server, "https://m.example");
+        assert_eq!(client.unwrap().username(), "alice");
+    }
+
+    #[test]
+    fn startup_without_credentials_prefills_login() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config("https://m.example", "alice").save(&path).unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("c.toml"));
+        let (app, client) = startup(&path, &store);
+        assert!(client.is_none());
+        assert_eq!(app.screen, crate::app::Screen::Login);
+        assert_eq!(app.login.server, "https://m.example");
+        assert_eq!(app.login.username, "alice");
+    }
+
+    #[test]
+    fn startup_after_logout_keeps_server_and_asks_for_username() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config("https://m.example", "").save(&path).unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("c.toml"));
+        let (app, _) = startup(&path, &store);
+        assert_eq!(app.login.server, "https://m.example");
+        assert_eq!(app.login.focus, crate::app::login::LoginField::Username);
+    }
+
+    #[test]
+    fn save_config_keeps_other_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config("https://old.example", "bob").save(&path).unwrap();
+        save_config(&path, "https://new.example", "alice").unwrap();
+        assert_eq!(
+            Config::load(&path).unwrap().unwrap(),
+            config("https://new.example", "alice")
+        );
+    }
+
+    #[test]
+    fn save_config_creates_defaults_when_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sub/config.toml");
+        save_config(&path, "https://m.example", "alice").unwrap();
+        let c = Config::load(&path).unwrap().unwrap();
+        assert_eq!(c.discord_default_image, "senritsu");
+        assert_eq!(c.username, "alice");
+    }
 
     async fn run_loop_briefly() -> anyhow::Result<()> {
         let (player, _player_rx) = mpsc::unbounded_channel();
         let (_snap_tx, snapshot) = watch::channel(PlayerSnapshot::default());
         let (_events_tx, engine_events) = mpsc::unbounded_channel();
-        let mut ctx = Ctx::new(None, player, snapshot, engine_events);
+        let mut ctx = Ctx::new(SharedClient::default(), player, snapshot, engine_events);
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
         let input = futures::stream::pending();
         tokio::time::timeout(

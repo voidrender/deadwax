@@ -8,6 +8,7 @@ pub enum Action {
     ToggleNowPlaying,
     ToggleHelp,
     Quit,
+    Logout,
     TogglePause,
     Next,
     Prev,
@@ -47,6 +48,7 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
         'z' => Action::ToggleNowPlaying,
         '?' => Action::ToggleHelp,
         'q' => Action::Quit,
+        'X' => Action::Logout,
         ' ' => Action::TogglePause,
         '.' => Action::Next,
         ',' => Action::Prev,
@@ -72,6 +74,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("r", "Cycle repeat: off, all, one"),
     ("?", "Toggle this help"),
     ("Esc", "Close popup or help"),
+    ("X", "Log out"),
     ("q", "Quit"),
 ];
 

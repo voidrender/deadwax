@@ -1,10 +1,18 @@
 pub mod keys;
+pub mod login;
 
+use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
+use crate::subsonic::SubsonicClient;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use image::DynamicImage;
 use keys::{Action, SEEK_STEP, VOLUME_STEP};
+use login::{LoginField, LoginState};
 use std::time::{Duration, Instant};
+
+/// Shown after a login that fell back to the credentials file.
+pub const FILE_CREDENTIALS_NOTICE: &str =
+    "No system keychain found. Login saved to credentials.toml (owner-only).";
 
 /// How long a status message replaces the view tabs.
 pub const STATUS_TTL: Duration = Duration::from_secs(4);
@@ -35,6 +43,7 @@ impl View {
 pub enum Screen {
     #[default]
     Main,
+    Login,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -47,8 +56,26 @@ pub enum Popup {
 
 /// Results of async work spawned by the runtime. The task that issues a
 /// request adds its variant here.
-#[derive(Debug)]
-pub enum ApiResult {}
+pub enum ApiResult {
+    LoggedIn {
+        client: SubsonicClient,
+        saved_to: SavedTo,
+    },
+    LoginFailed(String),
+}
+
+impl std::fmt::Debug for ApiResult {
+    // The client carries credentials, so it is never printed.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::LoggedIn { saved_to, .. } => f
+                .debug_struct("LoggedIn")
+                .field("saved_to", saved_to)
+                .finish_non_exhaustive(),
+            Self::LoginFailed(msg) => f.debug_tuple("LoginFailed").field(msg).finish(),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -70,12 +97,21 @@ pub enum AppEvent {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Effect {
     Player(PlayerCommand),
+    Login {
+        server: String,
+        username: String,
+        password: String,
+    },
+    Logout,
     Quit,
 }
 
 #[derive(Debug, Default)]
 pub struct App {
     pub screen: Screen,
+    pub login: LoginState,
+    /// The server the session is logged in to, for the logout prompt.
+    pub server: String,
     pub view: View,
     pub now_playing: bool,
     pub help: bool,
@@ -88,6 +124,43 @@ pub struct App {
 impl App {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// An app that starts on the main screen for an existing session.
+    pub fn logged_in(server: impl Into<String>) -> Self {
+        Self {
+            server: server.into(),
+            ..Self::default()
+        }
+    }
+
+    /// An app that starts on the login screen, with known fields filled in.
+    pub fn login_screen(server: &str, username: &str) -> Self {
+        let mut app = Self::default();
+        app.show_login(server, username);
+        app
+    }
+
+    /// Switches to the login screen. The password is always blank.
+    pub fn show_login(&mut self, server: &str, username: &str) {
+        let focus = if server.is_empty() {
+            LoginField::Server
+        } else if username.is_empty() {
+            LoginField::Username
+        } else {
+            LoginField::Password
+        };
+        self.screen = Screen::Login;
+        self.server.clear();
+        self.now_playing = false;
+        self.help = false;
+        self.popup = None;
+        self.login = LoginState {
+            server: server.to_string(),
+            username: username.to_string(),
+            focus,
+            ..LoginState::default()
+        };
     }
 
     pub fn set_status(&mut self, msg: impl Into<String>) {
@@ -127,9 +200,27 @@ impl App {
                 }
                 Vec::new()
             }
-            AppEvent::Api(result) => match result {},
+            AppEvent::Api(result) => self.handle_api(result),
             AppEvent::CoverReady { .. } => Vec::new(),
         }
+    }
+
+    fn handle_api(&mut self, result: ApiResult) -> Vec<Effect> {
+        match result {
+            ApiResult::LoggedIn { client, saved_to } => {
+                self.server = client.server_url().to_string();
+                self.screen = Screen::Main;
+                self.login = LoginState::default();
+                if saved_to == SavedTo::File {
+                    self.set_status(FILE_CREDENTIALS_NOTICE);
+                }
+            }
+            ApiResult::LoginFailed(msg) => {
+                self.login.busy = false;
+                self.login.error = Some(msg);
+            }
+        }
+        Vec::new()
     }
 
     fn handle_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -138,6 +229,9 @@ impl App {
         }
         if self.popup.is_some() {
             return self.handle_popup_key(key);
+        }
+        if self.screen == Screen::Login {
+            return self.login.handle_key(key);
         }
         match keys::global_action(&key) {
             Some(action) => self.run_action(action),
@@ -183,6 +277,18 @@ impl App {
                 return Vec::new();
             }
             Action::Quit => return vec![Effect::Quit],
+            Action::Logout => {
+                let message = if self.server.is_empty() {
+                    "Log out?".to_string()
+                } else {
+                    format!("Log out of {}?", self.server)
+                };
+                self.popup = Some(Popup::Confirm {
+                    message,
+                    on_yes: Box::new(Effect::Logout),
+                });
+                return Vec::new();
+            }
             Action::TogglePause => PlayerCommand::TogglePause,
             Action::Next => PlayerCommand::Next,
             Action::Prev => PlayerCommand::Prev,
@@ -264,6 +370,92 @@ mod tests {
 
         assert!(press(&mut app, 'j').is_empty());
         assert!(!app.help);
+    }
+
+    #[test]
+    fn logout_requires_confirm() {
+        let mut app = App::logged_in("https://music.example");
+        assert!(press(&mut app, 'X').is_empty());
+        assert_eq!(
+            app.popup,
+            Some(Popup::Confirm {
+                message: "Log out of https://music.example?".into(),
+                on_yes: Box::new(Effect::Logout),
+            })
+        );
+        assert_eq!(press(&mut app, 'y'), [Effect::Logout]);
+        assert!(app.popup.is_none());
+    }
+
+    #[test]
+    fn logout_key_acts_while_help_is_open() {
+        let mut app = App::logged_in("s");
+        app.help = true;
+        press(&mut app, 'X');
+        assert!(app.popup.is_some());
+    }
+
+    #[test]
+    fn login_screen_ignores_the_global_keymap() {
+        let mut app = App::login_screen("", "");
+        assert!(press(&mut app, 'q').is_empty());
+        assert!(press(&mut app, 'X').is_empty());
+        assert!(press(&mut app, '?').is_empty());
+        assert!(app.popup.is_none() && !app.help);
+        assert_eq!(app.login.server, "qX?");
+    }
+
+    #[test]
+    fn login_screen_prefills_and_focuses_first_empty_field() {
+        let app = App::login_screen("https://m.example", "alice");
+        assert_eq!(app.screen, Screen::Login);
+        assert_eq!(app.login.server, "https://m.example");
+        assert_eq!(app.login.focus, LoginField::Password);
+        let app = App::login_screen("https://m.example", "");
+        assert_eq!(app.login.focus, LoginField::Username);
+        let app = App::login_screen("", "");
+        assert_eq!(app.login.focus, LoginField::Server);
+    }
+
+    #[test]
+    fn login_failed_clears_busy_and_shows_error() {
+        let mut app = App::login_screen("a", "b");
+        app.login.busy = true;
+        app.handle_event(AppEvent::Api(ApiResult::LoginFailed("nope".into())));
+        assert!(!app.login.busy);
+        assert_eq!(app.login.error.as_deref(), Some("nope"));
+        assert_eq!(app.screen, Screen::Login);
+    }
+
+    fn logged_in_event(saved_to: SavedTo) -> AppEvent {
+        let client = SubsonicClient::new(
+            "https://music.example",
+            "alice",
+            crate::subsonic::Auth::Password("pw".into()),
+        )
+        .unwrap();
+        AppEvent::Api(ApiResult::LoggedIn { client, saved_to })
+    }
+
+    #[test]
+    fn logged_in_goes_to_main_and_wipes_the_password() {
+        let mut app = App::login_screen("a", "b");
+        app.login.password = "secret".into();
+        app.handle_event(logged_in_event(SavedTo::Keychain));
+        assert_eq!(app.screen, Screen::Main);
+        assert_eq!(app.server, "https://music.example");
+        assert!(app.login.password.is_empty());
+        assert_eq!(app.status_text(), None);
+    }
+
+    #[test]
+    fn file_fallback_shows_a_status_notice() {
+        let mut app = App::login_screen("a", "b");
+        app.handle_event(logged_in_event(SavedTo::File));
+        assert_eq!(
+            app.status_text(),
+            Some("No system keychain found. Login saved to credentials.toml (owner-only).")
+        );
     }
 
     #[test]

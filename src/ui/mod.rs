@@ -1,4 +1,5 @@
 pub mod help;
+pub mod login;
 pub mod strip;
 pub mod theme;
 pub mod widgets;
@@ -12,6 +13,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 pub fn draw(frame: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Main => draw_main(frame, app),
+        Screen::Login => login::draw(frame, frame.area(), &app.login),
     }
     let area = frame.area();
     if app.help {
