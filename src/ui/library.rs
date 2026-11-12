@@ -1,5 +1,5 @@
 use super::theme;
-use super::widgets::format_duration;
+use super::widgets::{display_width, format_duration, truncate};
 use crate::app::library::{ArtistRow, Column, LibraryState, Loadable};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -139,27 +139,19 @@ pub(super) fn draw_rows(
     frame.render_widget(Paragraph::new(lines), area);
 }
 
-/// Pads `left` and `right` to exactly `width` characters, truncating `left`
+/// Pads `left` and `right` to exactly `width` columns, truncating `left`
 /// with an ellipsis when they do not fit.
 pub(super) fn fit(left: &str, right: &str, width: usize) -> String {
-    let right_len = right.chars().count();
+    let right_len = display_width(right);
     let room = if right_len == 0 {
         width
     } else {
         width.saturating_sub(right_len + 1)
     };
-    let mut out: String = if left.chars().count() > room {
-        let mut t: String = left.chars().take(room.saturating_sub(1)).collect();
-        if room > 0 {
-            t.push('…');
-        }
-        t
-    } else {
-        left.to_string()
-    };
-    let pad = width.saturating_sub(out.chars().count() + right_len);
-    out.push_str(&" ".repeat(pad));
-    if right_len + out.chars().count() <= width {
+    let mut out = truncate(left, room);
+    let used = display_width(&out);
+    out.push_str(&" ".repeat(width.saturating_sub(used + right_len)));
+    if right_len + used <= width {
         out.push_str(right);
     }
     out
@@ -254,5 +246,31 @@ mod tests {
                 render(&lib, w, h);
             }
         }
+    }
+
+    #[test]
+    fn fit_measures_display_width_for_wide_titles() {
+        use unicode_width::UnicodeWidthStr;
+        let row = fit("旋律のテスト曲名", "2:31", 20);
+        assert_eq!(row.width(), 20, "{row:?}");
+        assert!(row.ends_with("2:31"), "{row:?}");
+        assert!(row.contains('…'), "{row:?}");
+        // An odd room never splits a wide char: 21 leaves 16 for the title.
+        let row = fit("旋律のテスト曲名ですよ", "2:31", 21);
+        assert_eq!(row.width(), 21, "{row:?}");
+        assert!(row.ends_with("2:31"), "{row:?}");
+        // Short wide titles pad by display width.
+        let row = fit("旋律", "2:31", 20);
+        assert_eq!(row.width(), 20, "{row:?}");
+    }
+
+    #[test]
+    fn wide_title_row_keeps_duration_on_screen() {
+        let rows = vec![("旋律のテスト曲名".to_string(), "2:31".to_string())];
+        let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
+        term.draw(|f| draw_rows(f, f.area(), &rows, 0, false))
+            .unwrap();
+        let text = buffer_text(term.backend().buffer());
+        assert!(text.trim_end().ends_with("2:31"), "{text}");
     }
 }

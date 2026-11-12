@@ -1,6 +1,6 @@
 use super::library::fit;
 use super::theme;
-use super::widgets::format_duration;
+use super::widgets::{format_duration, tail};
 use crate::app::library::Loadable;
 use crate::app::search::{SearchRow, SearchState};
 use ratatui::Frame;
@@ -28,7 +28,9 @@ fn draw_input(frame: &mut Frame, area: Rect, search: &SearchState) {
     if search.input.is_empty() && !search.editing {
         spans.push(Span::styled("Press / to search", theme::dim()));
     } else {
-        spans.push(Span::raw(search.input.clone()));
+        // Prefix "/ " and cursor take three columns inside the borders.
+        let room = usize::from(area.width).saturating_sub(5);
+        spans.push(Span::raw(tail(&search.input, room)));
     }
     if search.editing {
         spans.push(Span::styled("▏", theme::accent()));
@@ -195,5 +197,16 @@ mod tests {
         for (w, h) in [(0, 0), (1, 1), (5, 3), (3, 20), (40, 4), (40, 2)] {
             render(&s, w, h);
         }
+    }
+
+    #[test]
+    fn long_wide_input_shows_its_end_and_the_cursor() {
+        let s = SearchState {
+            input: "旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律終".into(),
+            editing: true,
+            ..SearchState::default()
+        };
+        let text = render(&s, 30, 8);
+        assert!(text.contains("終▏"), "{text}");
     }
 }

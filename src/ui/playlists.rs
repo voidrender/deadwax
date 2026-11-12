@@ -1,6 +1,6 @@
 use super::library::{Body, body_of, draw_rows};
 use super::theme;
-use super::widgets::{centered, format_duration};
+use super::widgets::{centered, format_duration, tail};
 use crate::app::library::Loadable;
 use crate::app::playlists::{PickerState, PlColumn, PlaylistsState, songs_label};
 use ratatui::Frame;
@@ -92,12 +92,8 @@ fn popup_block(title: &str) -> Block<'static> {
 pub fn draw_text_input(frame: &mut Frame, area: Rect, title: &str, value: &str) {
     let rect = centered(area, POPUP_WIDTH.min(area.width), 5.min(area.height));
     let room = usize::from(rect.width.saturating_sub(4));
-    let count = value.chars().count();
     // Show the end of the text so the cursor stays visible.
-    let shown: String = value
-        .chars()
-        .skip(count.saturating_sub(room.saturating_sub(1)))
-        .collect();
+    let shown = tail(value, room.saturating_sub(1));
     let body = vec![
         Line::from(vec![Span::raw(shown), Span::styled("█", theme::accent())]),
         Line::raw(""),
@@ -223,5 +219,13 @@ mod tests {
             text.contains("Rename playlist") && text.contains("Mix"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn text_input_keeps_the_cursor_visible_with_wide_text() {
+        let value =
+            "旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律旋律終";
+        let text = render(|f| draw_text_input(f, f.area(), "Rename", value), 60, 12);
+        assert!(text.contains("終█"), "{text}");
     }
 }

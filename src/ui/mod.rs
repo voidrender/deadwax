@@ -70,7 +70,7 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
                 Span::styled("n", theme::accent_bold()),
                 Span::styled(" no", theme::muted()),
             ]);
-            let width = message.chars().count().max(24) + 4;
+            let width = widgets::display_width(message).max(24) + 4;
             let rect = widgets::centered(area, u16::try_from(width).unwrap_or(u16::MAX), 5);
             let block = Block::bordered()
                 .border_type(BorderType::Rounded)
@@ -97,12 +97,18 @@ pub(crate) mod testing {
     use ratatui::buffer::Buffer;
 
     /// The buffer's symbols, one line per row, for text assertions.
+    /// Cells hidden behind a wide character are skipped, so each line reads
+    /// as it appears on screen.
     pub(crate) fn buffer_text(buf: &Buffer) -> String {
+        use unicode_width::UnicodeWidthStr;
         let area = buf.area;
         let mut out = String::new();
         for y in area.top()..area.bottom() {
-            for x in area.left()..area.right() {
-                out.push_str(buf[(x, y)].symbol());
+            let mut x = area.left();
+            while x < area.right() {
+                let symbol = buf[(x, y)].symbol();
+                out.push_str(symbol);
+                x += u16::try_from(symbol.width().max(1)).unwrap_or(1);
             }
             out.push('\n');
         }
@@ -207,6 +213,18 @@ mod tests {
         });
         let text = render(&mut app, 100, 30);
         assert!(text.contains("Really quit?"), "{text}");
+    }
+
+    #[test]
+    fn confirm_popup_sizes_wide_messages_by_display_width() {
+        let message = "プレイリスト旋律を削除しますか";
+        let mut app = App::new();
+        app.popup = Some(crate::app::Popup::Confirm {
+            message: message.into(),
+            on_yes: Box::new(crate::app::Effect::Quit),
+        });
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains(message), "{text}");
     }
 
     #[test]
