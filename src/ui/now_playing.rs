@@ -16,6 +16,9 @@ pub const MIN_WIDTH: u16 = 60;
 pub const MIN_HEIGHT: u16 = 16;
 /// Share of the width the art may take.
 const ART_PERCENT: u32 = 45;
+/// Widest the art gets, in columns, so it stops growing on large terminals.
+/// With the usual 1:2 cell this is about 30 rows tall.
+const MAX_ART_WIDTH: u32 = 60;
 /// Columns left of the art and between art and text.
 const MARGIN: u16 = 2;
 
@@ -36,11 +39,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     draw_details(frame, text, &app.player);
 }
 
-/// The largest area, at most `ART_PERCENT` of the width, that is square in
-/// pixels for the given cell size, centered vertically.
+/// The largest area, at most `ART_PERCENT` of the width and `MAX_ART_WIDTH`
+/// columns, that is square in pixels for the given cell size, centered
+/// vertically.
 fn art_rect(area: Rect, cell_w: u32, cell_h: u32) -> Rect {
     let (cell_w, cell_h) = (cell_w.max(1), cell_h.max(1));
-    let max_w = u32::from(area.width) * ART_PERCENT / 100;
+    let max_w = (u32::from(area.width) * ART_PERCENT / 100).min(MAX_ART_WIDTH);
     let max_h = u32::from(area.height.saturating_sub(2));
     let mut w = max_w;
     let mut h = w * cell_w / cell_h;
@@ -140,6 +144,20 @@ fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn art_grows_with_the_area_up_to_a_cap() {
+        // A 100x40 area gives 45 columns, square for 1:2 cells.
+        let small = art_rect(Rect::new(0, 0, 100, 40), 8, 16);
+        assert_eq!((small.width, small.height), (45, 22));
+        // A huge area stops at the cap and stays square.
+        let big = art_rect(Rect::new(0, 0, 400, 120), 8, 16);
+        assert_eq!((big.width, big.height), (60, 30));
+        assert_eq!(big.y, (120 - 30) / 2);
+        // A short area is limited by height first.
+        let short = art_rect(Rect::new(0, 0, 400, 22), 8, 16);
+        assert_eq!((short.width, short.height), (40, 20));
+    }
     use crate::player::queue::QueueItem;
     use crate::player::{PlayerSnapshot, Status};
     use crate::subsonic::Song;
