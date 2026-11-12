@@ -191,6 +191,23 @@ The log is a single file, `senritsu.log`, that is appended to and never rotated.
 - If mpv dies mid-track, Senritsu restarts it and resumes.
 - Playback is gapless where mpv can do it.
 
+## Development
+
+```sh
+cargo run
+cargo test
+```
+
+On macOS, keychain access belongs to the exact build that was granted it. Cargo gives every build a new ad-hoc signature, so without a fix macOS asks for your login password after each rebuild. To stop that, create a self-signed signing identity once:
+
+```sh
+scripts/make-dev-cert.sh
+```
+
+After that, `cargo run` signs the binary with the "Senritsu Dev" identity before starting it (see `.cargo/config.toml` and `scripts/macos-dev-runner.sh`). The first signing asks you to let `codesign` use the new key, and the first launch asks for keychain access. Choose Always Allow both times. To sign with a different identity, set `SENRITSU_SIGN_IDENTITY` to its name.
+
+Binaries from `cargo install` are not signed this way, so macOS asks once after each install.
+
 ## License
 
 Senritsu is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
