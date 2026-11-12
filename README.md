@@ -14,6 +14,20 @@ Senritsu exits with an install hint if it cannot find mpv.
 
 ## Install
 
+### Homebrew (macOS and Linux)
+
+```sh
+brew install voidrender/tap/senritsu
+```
+
+The formula installs mpv as a dependency. On macOS it also builds the notification helper, so notifications work without the setup step below.
+
+### Arch Linux
+
+Install the `senritsu` package from the AUR with your AUR helper, for example `paru -S senritsu`.
+
+### From source
+
 ```sh
 cargo install --path .
 ```
@@ -22,7 +36,7 @@ This installs the `senritsu` binary. Run `senritsu` and fill in the login screen
 
 ### macOS notifications
 
-macOS needs a small signed helper app to show notifications. Build and install it with:
+macOS needs a small signed helper app to show notifications. Homebrew installs it for you. With any other install, build and install it with:
 
 ```sh
 scripts/install-macos-notifier.sh
