@@ -35,6 +35,8 @@ pub struct PlaylistsState {
 #[derive(Clone, Debug, PartialEq)]
 pub struct PickerState {
     pub song_ids: Vec<String>,
+    /// The same songs, so an add to the shown playlist can update it locally.
+    pub songs: Vec<Song>,
     pub lists: Loadable<Vec<Playlist>>,
     pub sel: usize,
 }
@@ -172,10 +174,45 @@ impl PlaylistsState {
         if self.pending > 0 || self.tracks_for.as_deref() != Some(id) {
             return Ok(());
         }
-        let songs = result?;
-        self.sel[1] = self.sel[1].min(songs.len().saturating_sub(1));
-        self.tracks = Loadable::Loaded(songs);
-        Ok(())
+        match result {
+            Ok(songs) => {
+                self.sel[1] = self.sel[1].min(songs.len().saturating_sub(1));
+                self.tracks = Loadable::Loaded(songs);
+                Ok(())
+            }
+            Err(msg) => {
+                // Edits stay refused until a retry loads the playlist.
+                self.tracks = Loadable::Failed(msg.clone());
+                Err(msg)
+            }
+        }
+    }
+
+    /// After a failed edit the local copy of `id` is no longer trusted. It
+    /// shows as loading, and edits are refused, until the reload lands.
+    fn mark_refreshing(&mut self, id: Option<&str>) {
+        if let Some(id) = id
+            && self.tracks_for.as_deref() == Some(id)
+            && self.tracks.loaded().is_some()
+        {
+            self.tracks = Loadable::Loading;
+        }
+    }
+
+    /// Appends songs the server is about to receive, when `id` is shown.
+    fn append_local(&mut self, id: &str, added: &[Song]) {
+        if self.tracks_for.as_deref() == Some(id)
+            && let Loadable::Loaded(songs) = &mut self.tracks
+        {
+            songs.extend_from_slice(added);
+        }
+        if let Loadable::Loaded(lists) = &mut self.lists
+            && let Some(p) = lists.iter_mut().find(|p| p.id == id)
+        {
+            p.song_count = p
+                .song_count
+                .saturating_add(u32::try_from(added.len()).unwrap_or(u32::MAX));
+        }
     }
 
     /// Counts the mutations among freshly returned effects.
@@ -293,42 +330,28 @@ impl PlaylistsState {
 impl App {
     /// Song ids the global `a` key would add. Views extend this.
     pub fn add_to_playlist_targets(&self) -> Vec<String> {
+        self.add_to_playlist_songs()
+            .into_iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    fn add_to_playlist_songs(&self) -> Vec<Song> {
         if self.screen != Screen::Main || self.now_playing {
             return Vec::new();
         }
-        let ids = |songs: &[Song]| songs.iter().map(|s| s.id.clone()).collect();
+        let one = |s: Option<&Song>| s.cloned().into_iter().collect();
+        let all = |t: Option<&Vec<Song>>| t.cloned().unwrap_or_default();
         match self.view {
             View::Library => match self.library.focus {
-                Column::Tracks => self
-                    .library
-                    .selected_track()
-                    .map(|s| vec![s.id.clone()])
-                    .unwrap_or_default(),
-                Column::Albums => self
-                    .library
-                    .tracks
-                    .loaded()
-                    .map(|t| ids(t))
-                    .unwrap_or_default(),
+                Column::Tracks => one(self.library.selected_track()),
+                Column::Albums => all(self.library.tracks.loaded()),
                 Column::Artists => Vec::new(),
             },
-            View::Search => self
-                .search
-                .selected_song()
-                .map(|s| vec![s.id.clone()])
-                .unwrap_or_default(),
+            View::Search => one(self.search.selected_song()),
             View::Playlists => match self.playlists.focus {
-                PlColumn::Tracks => self
-                    .playlists
-                    .selected_track()
-                    .map(|s| vec![s.id.clone()])
-                    .unwrap_or_default(),
-                PlColumn::Lists => self
-                    .playlists
-                    .tracks
-                    .loaded()
-                    .map(|t| ids(t))
-                    .unwrap_or_default(),
+                PlColumn::Tracks => one(self.playlists.selected_track()),
+                PlColumn::Lists => all(self.playlists.tracks.loaded()),
             },
             View::Queue => Vec::new(),
         }
@@ -336,14 +359,16 @@ impl App {
 
     /// Opens the picker for the current target, or says there is none.
     pub(super) fn open_picker(&mut self) -> Vec<Effect> {
-        let song_ids = self.add_to_playlist_targets();
-        if song_ids.is_empty() {
+        let songs = self.add_to_playlist_songs();
+        if songs.is_empty() {
             self.set_status("Nothing to add");
             return Vec::new();
         }
         let effects = self.playlists.start();
+        let song_ids = songs.iter().map(|s| s.id.clone()).collect();
         self.popup = Some(Popup::PlaylistPicker(PickerState {
             song_ids,
+            songs,
             lists: self.playlists.lists.clone(),
             sel: 0,
         }));
@@ -355,6 +380,13 @@ impl App {
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
         {
+            return Vec::new();
+        }
+        if matches!(key.code, KeyCode::Char('d' | 'J' | 'K'))
+            && self.playlists.focus == PlColumn::Tracks
+            && self.playlists.tracks == Loadable::Loading
+        {
+            self.set_status("Playlist is refreshing");
             return Vec::new();
         }
         let pl = &mut self.playlists;
@@ -494,8 +526,10 @@ impl App {
             }
             KeyCode::Enter => {
                 if let Some(p) = picker.lists.loaded().and_then(|l| l.get(picker.sel - 1)) {
+                    let id = p.id.clone();
+                    self.playlists.append_local(&id, &picker.songs);
                     let effect = Effect::AddToPlaylist {
-                        id: p.id.clone(),
+                        id,
                         song_ids: picker.song_ids,
                     };
                     return (None, vec![effect]);
@@ -537,12 +571,15 @@ impl App {
                 }
                 Vec::new()
             }
-            ApiResult::PlaylistMutated(result) => {
+            ApiResult::PlaylistMutated { result, id } => {
                 self.playlists.pending = self.playlists.pending.saturating_sub(1);
                 match result {
                     Ok(msg) if msg.is_empty() => {}
                     Ok(msg) => self.set_status(msg),
-                    Err(msg) => self.set_status(format!("Couldn't update the playlist: {msg}")),
+                    Err(msg) => {
+                        self.set_status(format!("Couldn't update the playlist: {msg}"));
+                        self.playlists.mark_refreshing(id.as_deref());
+                    }
                 }
                 Vec::new()
             }
@@ -568,6 +605,13 @@ mod tests {
 
     fn api(app: &mut App, r: ApiResult) -> Vec<Effect> {
         app.handle_event(AppEvent::Api(r))
+    }
+
+    fn mutated(result: Result<String, String>, id: Option<&str>) -> ApiResult {
+        ApiResult::PlaylistMutated {
+            result,
+            id: id.map(str::to_string),
+        }
     }
 
     fn song(id: &str) -> Song {
@@ -881,8 +925,8 @@ mod tests {
             },
         );
         assert_eq!(track_ids(&app).len(), 4);
-        api(&mut app, ApiResult::PlaylistMutated(Ok(String::new())));
-        api(&mut app, ApiResult::PlaylistMutated(Ok(String::new())));
+        api(&mut app, mutated(Ok(String::new()), None));
+        api(&mut app, mutated(Ok(String::new()), None));
         api(
             &mut app,
             ApiResult::PlaylistReloaded {
@@ -896,12 +940,9 @@ mod tests {
     #[test]
     fn mutation_results_set_status() {
         let mut app = app_with_playlist();
-        api(
-            &mut app,
-            ApiResult::PlaylistMutated(Ok("Added 3 songs to Mix".into())),
-        );
+        api(&mut app, mutated(Ok("Added 3 songs to Mix".into()), None));
         assert_eq!(app.status_text(), Some("Added 3 songs to Mix"));
-        api(&mut app, ApiResult::PlaylistMutated(Err("boom".into())));
+        api(&mut app, mutated(Err("boom".into()), None));
         assert_eq!(
             app.status_text(),
             Some("Couldn't update the playlist: boom")
@@ -934,5 +975,93 @@ mod tests {
         let mut app = app_with_playlist();
         app.playlists.set_starred("b", true);
         assert!(app.playlists.tracks.loaded().unwrap()[1].starred);
+    }
+
+    #[test]
+    fn adding_to_the_shown_playlist_appends_locally_before_a_move() {
+        let mut app = app_with_playlist();
+        app.library.focus = Column::Tracks;
+        app.library.tracks = Loadable::Loaded(vec![song("new")]);
+        app.view = View::Library;
+        press(&mut app, 'a');
+        press(&mut app, 'j');
+        let effects = key(&mut app, KeyCode::Enter);
+        assert_eq!(
+            effects,
+            [Effect::AddToPlaylist {
+                id: "pl1".into(),
+                song_ids: ids(&["new"]),
+            }]
+        );
+        assert_eq!(track_ids(&app), ids(&["a", "b", "c", "d", "new"]));
+        app.view = View::Playlists;
+        app.playlists.sel[1] = 4;
+        let effects = press(&mut app, 'K');
+        assert_eq!(
+            effects,
+            [Effect::ReplacePlaylistSongs {
+                id: "pl1".into(),
+                song_ids: ids(&["a", "b", "c", "new", "d"]),
+            }]
+        );
+    }
+
+    #[test]
+    fn a_failed_edit_refuses_more_until_the_reload_lands() {
+        let mut app = app_with_playlist();
+        press(&mut app, 'd');
+        press(&mut app, 'd');
+        api(&mut app, mutated(Err("boom".into()), Some("pl1")));
+        assert_eq!(app.playlists.tracks, Loadable::Loading);
+        assert!(press(&mut app, 'd').is_empty());
+        assert_eq!(app.status_text(), Some("Playlist is refreshing"));
+        assert!(press(&mut app, 'J').is_empty());
+        // The skipped second job settles, then the reload lands.
+        api(&mut app, mutated(Ok(String::new()), None));
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl1".into(),
+                result: Ok(vec![song("a"), song("b")]),
+            },
+        );
+        assert_eq!(track_ids(&app), ids(&["a", "b"]));
+        assert_eq!(press(&mut app, 'd').len(), 1);
+    }
+
+    #[test]
+    fn a_failed_reload_makes_the_playlist_read_only() {
+        let mut app = app_with_playlist();
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl1".into(),
+                result: Err("down".into()),
+            },
+        );
+        assert!(matches!(app.playlists.tracks, Loadable::Failed(_)));
+        assert!(press(&mut app, 'd').is_empty());
+        assert!(app.playlists.tracks.loaded().is_none());
+    }
+
+    #[test]
+    fn results_from_an_earlier_session_are_ignored() {
+        let mut app = app_with_playlist();
+        press(&mut app, 'd');
+        let stale = ApiResult::Session {
+            session: app.session + 1,
+            inner: Box::new(mutated(Ok("Removed".into()), Some("pl1"))),
+        };
+        api(&mut app, stale);
+        assert_eq!(app.playlists.pending, 1);
+        assert_eq!(app.status_text(), None);
+        let current = ApiResult::Session {
+            session: app.session,
+            inner: Box::new(mutated(Ok("Removed".into()), Some("pl1"))),
+        };
+        api(&mut app, current);
+        assert_eq!(app.playlists.pending, 0);
+        app.show_login("s", "u");
+        assert_eq!(app.session, 1);
     }
 }

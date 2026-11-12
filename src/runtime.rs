@@ -12,6 +12,7 @@ use crossterm::event::{Event, EventStream};
 use futures::{Stream, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use std::collections::VecDeque;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -92,8 +93,10 @@ pub struct Ctx {
     /// Sequence of the newest search effect, so superseded ones can be dropped.
     pub latest_search: Arc<AtomicU64>,
     /// Playlist mutations go to one worker so they reach the server in order.
-    playlist_tx: mpsc::UnboundedSender<Effect>,
-    playlist_rx: Option<mpsc::UnboundedReceiver<Effect>>,
+    playlist_tx: mpsc::UnboundedSender<Job>,
+    playlist_rx: Option<mpsc::UnboundedReceiver<Job>>,
+    /// The app's session, mirrored so the worker can drop stale jobs.
+    session: Arc<AtomicU64>,
 }
 
 impl Ctx {
@@ -117,6 +120,7 @@ impl Ctx {
             latest_search: Arc::new(AtomicU64::new(0)),
             playlist_tx,
             playlist_rx: Some(playlist_rx),
+            session: Arc::new(AtomicU64::new(0)),
         }
     }
 }
@@ -132,7 +136,12 @@ where
     B::Error: Send + Sync + 'static,
 {
     if let Some(rx) = ctx.playlist_rx.take() {
-        tokio::spawn(playlist_worker(rx, ctx.client.clone(), ctx.tx.clone()));
+        tokio::spawn(playlist_worker(
+            rx,
+            ctx.client.clone(),
+            Arc::clone(&ctx.session),
+            ctx.tx.clone(),
+        ));
     }
     let result = event_loop(terminal, app, &mut ctx, EventStream::new()).await;
     shutdown_engine(&mut ctx).await;
@@ -194,9 +203,12 @@ where
         if let AppEvent::Api(ApiResult::LoggedIn { client, .. }) = &ev {
             set_client(&ctx.client, Some(client.clone()));
         }
-        for effect in app.handle_event(ev) {
+        let effects = app.handle_event(ev);
+        ctx.session.store(app.session, Ordering::SeqCst);
+        for effect in effects {
             execute(effect, &mut app, ctx);
         }
+        ctx.session.store(app.session, Ordering::SeqCst);
         check_panicked()?;
         terminal.draw(|f| ui::draw(f, &mut app))?;
     }
@@ -298,27 +310,33 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                 let _ = tx.send(AppEvent::Api(ApiResult::Search { seq, result }));
             });
         }
-        Effect::LoadPlaylists => spawn_api(
-            ctx,
-            |c| async move { c.get_playlists().await },
-            ApiResult::Playlists,
-        ),
-        Effect::LoadPlaylist(id) => {
-            let key = id.clone();
-            spawn_api(
-                ctx,
-                |c| async move { c.get_playlist(&id).await.map(|p| p.songs) },
-                move |result| ApiResult::Playlist { id: key, result },
-            );
-        }
-        mutation @ (Effect::CreatePlaylist { .. }
+        job @ (Effect::LoadPlaylists
+        | Effect::LoadPlaylist(_)
+        | Effect::CreatePlaylist { .. }
         | Effect::RenamePlaylist { .. }
         | Effect::DeletePlaylist(_)
         | Effect::AddToPlaylist { .. }
         | Effect::RemoveFromPlaylist { .. }
         | Effect::ReplacePlaylistSongs { .. }) => {
-            if ctx.playlist_tx.send(mutation).is_err() {
+            let is_mutation = job.is_playlist_mutation();
+            ctx.session.store(app.session, Ordering::SeqCst);
+            let sent = ctx.playlist_tx.send(Job {
+                session: app.session,
+                effect: job,
+            });
+            if sent.is_err() {
                 app.set_status("Playlist updates have stopped");
+                if is_mutation {
+                    // Settle the pending count so reloads are not held back.
+                    let result = ApiResult::Session {
+                        session: app.session,
+                        inner: Box::new(ApiResult::PlaylistMutated {
+                            result: Err("the playlist worker has stopped".to_string()),
+                            id: None,
+                        }),
+                    };
+                    app.handle_event(AppEvent::Api(result));
+                }
             }
         }
         Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),
@@ -350,14 +368,70 @@ fn spawn_api<T, F, Fut>(
     });
 }
 
-/// Runs playlist mutations one at a time, in the order they were sent.
+/// A playlist read or mutation, stamped with the session it was issued in.
+struct Job {
+    session: u64,
+    effect: Effect,
+}
+
+impl Job {
+    /// The playlist a mutation edits, if it edits one.
+    fn target(&self) -> Option<&str> {
+        match &self.effect {
+            Effect::RenamePlaylist { id, .. }
+            | Effect::AddToPlaylist { id, .. }
+            | Effect::RemoveFromPlaylist { id, .. }
+            | Effect::ReplacePlaylistSongs { id, .. } => Some(id),
+            _ => None,
+        }
+    }
+}
+
+/// Runs playlist reads and mutations one at a time, in the order they were
+/// sent, so a read never overtakes a queued write. Jobs from an earlier
+/// session are dropped.
 async fn playlist_worker(
-    mut rx: mpsc::UnboundedReceiver<Effect>,
+    mut rx: mpsc::UnboundedReceiver<Job>,
     client: SharedClient,
+    session: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
-    while let Some(effect) = rx.recv().await {
-        run_playlist_job(effect, &client, &tx).await;
+    let mut buffered: VecDeque<Job> = VecDeque::new();
+    loop {
+        let job = match buffered.pop_front() {
+            Some(job) => job,
+            None => match rx.recv().await {
+                Some(job) => job,
+                None => return,
+            },
+        };
+        if job.session != session.load(Ordering::SeqCst) {
+            continue;
+        }
+        let send = |r: ApiResult| {
+            let _ = tx.send(AppEvent::Api(ApiResult::Session {
+                session: job.session,
+                inner: Box::new(r),
+            }));
+        };
+        run_playlist_job(&job, &client, &send, &mut |failed_id| {
+            // Later jobs for the failed playlist were computed on state the
+            // server does not have, so the ones already queued are skipped.
+            while let Ok(next) = rx.try_recv() {
+                buffered.push_back(next);
+            }
+            let (skipped, kept): (Vec<_>, Vec<_>) = buffered
+                .drain(..)
+                .partition(|j| j.session == job.session && j.target() == Some(failed_id));
+            buffered.extend(kept);
+            for _ in skipped {
+                send(ApiResult::PlaylistMutated {
+                    result: Ok(String::new()),
+                    id: None,
+                });
+            }
+        })
+        .await;
     }
 }
 
@@ -370,22 +444,48 @@ type JobOutcome = (
     Box<dyn FnOnce(&str) -> String + Send>,
 );
 
-/// Applies one mutation, then reports it and reloads what it touched. The
-/// reload happens after a failure too, so the optimistic local state is
-/// corrected from the server.
+/// Runs one job and reports it. After a mutation it reloads what changed.
+/// The reload happens after a failure too, so the optimistic local state is
+/// corrected from the server. `on_failure` runs with the failed playlist's
+/// id before the reload is reported.
 async fn run_playlist_job(
-    effect: Effect,
+    job: &Job,
     client: &SharedClient,
-    tx: &mpsc::UnboundedSender<AppEvent>,
+    send: &impl Fn(ApiResult),
+    on_failure: &mut impl FnMut(&str),
 ) {
-    let send = |r: ApiResult| {
-        let _ = tx.send(AppEvent::Api(r));
-    };
     let Some(c) = current_client(client) else {
-        send(ApiResult::PlaylistMutated(Err(NOT_LOGGED_IN.to_string())));
+        match &job.effect {
+            Effect::LoadPlaylists => send(ApiResult::Playlists(Err(NOT_LOGGED_IN.to_string()))),
+            Effect::LoadPlaylist(id) => send(ApiResult::Playlist {
+                id: id.clone(),
+                result: Err(NOT_LOGGED_IN.to_string()),
+            }),
+            _ => send(ApiResult::PlaylistMutated {
+                result: Err(NOT_LOGGED_IN.to_string()),
+                id: None,
+            }),
+        }
         return;
     };
-    let (outcome, id, reload_list, message): JobOutcome = match effect {
+    let (outcome, id, reload_list, message): JobOutcome = match job.effect.clone() {
+        Effect::LoadPlaylists => {
+            send(ApiResult::Playlists(
+                c.get_playlists().await.map_err(|e| e.to_string()),
+            ));
+            return;
+        }
+        Effect::LoadPlaylist(id) => {
+            send(ApiResult::Playlist {
+                result: c
+                    .get_playlist(&id)
+                    .await
+                    .map(|p| p.songs)
+                    .map_err(|e| e.to_string()),
+                id,
+            });
+            return;
+        }
         Effect::CreatePlaylist { name, song_ids } => {
             let n = song_ids.len();
             match c.create_playlist(&name, &song_ids).await {
@@ -445,9 +545,14 @@ async fn run_playlist_job(
         .and_then(|r| r.as_ref().ok())
         .map_or("the playlist", |p| p.playlist.name.as_str())
         .to_string();
-    send(ApiResult::PlaylistMutated(
-        outcome.map(|()| message(&name)).map_err(|e| e.to_string()),
-    ));
+    let failed = outcome.is_err();
+    send(ApiResult::PlaylistMutated {
+        result: outcome.map(|()| message(&name)).map_err(|e| e.to_string()),
+        id: id.clone(),
+    });
+    if failed && let Some(id) = &id {
+        on_failure(id);
+    }
     if let (Some(id), Some(r)) = (id, reloaded) {
         send(ApiResult::PlaylistReloaded {
             id,
@@ -823,89 +928,237 @@ mod tests {
         assert_eq!(c.username, "alice");
     }
 
-    #[tokio::test]
-    async fn playlist_worker_runs_jobs_in_order_and_reports() {
+    fn wire(body: serde_json::Value) -> wiremock::ResponseTemplate {
+        wiremock::ResponseTemplate::new(200).set_body_json(body)
+    }
+
+    /// A server that accepts every playlist call. With `fail_remove`,
+    /// removals fail.
+    async fn playlist_server(fail_remove: bool) -> wiremock::MockServer {
         use serde_json::json;
-        use wiremock::matchers::path;
-        use wiremock::{Mock, MockServer, ResponseTemplate};
+        use wiremock::matchers::{path, query_param};
+        use wiremock::{Mock, MockServer};
 
         let server = MockServer::start().await;
         let ok = json!({"subsonic-response":{"status":"ok","version":"1.16.1"}});
+        let failed = json!({"subsonic-response":{"status":"failed","version":"1.16.1",
+            "error":{"code":0,"message":"nope"}}});
         let playlist = json!({"subsonic-response":{"status":"ok","version":"1.16.1",
             "playlist":{"id":"pl1","name":"Mix","songCount":0,"duration":0}}});
         let lists = json!({"subsonic-response":{"status":"ok","version":"1.16.1",
             "playlists":{"playlist":[]}}});
-        Mock::given(path("/rest/updatePlaylist"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ok.clone()))
-            .mount(&server)
-            .await;
-        Mock::given(path("/rest/createPlaylist"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(ok))
-            .mount(&server)
-            .await;
-        Mock::given(path("/rest/getPlaylist"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(playlist))
-            .mount(&server)
-            .await;
-        Mock::given(path("/rest/getPlaylists"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(lists))
-            .mount(&server)
-            .await;
+        if fail_remove {
+            Mock::given(path("/rest/updatePlaylist"))
+                .and(query_param("songIndexToRemove", "1"))
+                .respond_with(wire(failed))
+                .mount(&server)
+                .await;
+        }
+        for (p, body) in [
+            ("updatePlaylist", ok.clone()),
+            ("createPlaylist", ok),
+            ("getPlaylist", playlist),
+            ("getPlaylists", lists),
+        ] {
+            Mock::given(path(format!("/rest/{p}")))
+                .respond_with(wire(body))
+                .mount(&server)
+                .await;
+        }
+        server
+    }
 
+    fn shared_for(server: &wiremock::MockServer) -> SharedClient {
         let shared = SharedClient::default();
         set_client(
             &shared,
             Some(SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap()),
         );
+        shared
+    }
+
+    /// Runs the jobs through the worker and returns every event it sent.
+    async fn run_jobs(shared: SharedClient, current: u64, jobs: Vec<Job>) -> Vec<ApiResult> {
         let (job_tx, job_rx) = mpsc::unbounded_channel();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        job_tx
-            .send(Effect::RemoveFromPlaylist {
-                id: "pl1".into(),
-                index: 1,
-            })
-            .unwrap();
-        job_tx
-            .send(Effect::ReplacePlaylistSongs {
-                id: "pl1".into(),
-                song_ids: vec!["a".into(), "b".into()],
-            })
-            .unwrap();
-        job_tx
-            .send(Effect::AddToPlaylist {
-                id: "pl1".into(),
-                song_ids: vec!["a".into(), "b".into(), "c".into()],
-            })
-            .unwrap();
-        drop(job_tx);
-        playlist_worker(job_rx, shared, tx).await;
-
-        let mut mutated = Vec::new();
-        while let Ok(ev) = rx.try_recv() {
-            if let AppEvent::Api(ApiResult::PlaylistMutated(r)) = ev {
-                mutated.push(r);
-            }
+        for job in jobs {
+            job_tx.send(job).unwrap();
         }
+        drop(job_tx);
+        playlist_worker(job_rx, shared, Arc::new(AtomicU64::new(current)), tx).await;
+        let mut out = Vec::new();
+        while let Ok(AppEvent::Api(ApiResult::Session { inner, .. })) = rx.try_recv() {
+            out.push(*inner);
+        }
+        out
+    }
+
+    fn job(session: u64, effect: Effect) -> Job {
+        Job { session, effect }
+    }
+
+    fn remove(id: &str, index: usize) -> Effect {
+        Effect::RemoveFromPlaylist {
+            id: id.into(),
+            index,
+        }
+    }
+
+    fn mutated_results(events: &[ApiResult]) -> Vec<Result<String, String>> {
+        events
+            .iter()
+            .filter_map(|e| match e {
+                ApiResult::PlaylistMutated { result, .. } => Some(result.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    async fn paths(server: &wiremock::MockServer) -> Vec<String> {
+        server
+            .received_requests()
+            .await
+            .unwrap()
+            .iter()
+            .map(|r| {
+                format!(
+                    "{}?{}",
+                    r.url.path().trim_start_matches("/rest/"),
+                    r.url.query().unwrap_or_default()
+                )
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn playlist_worker_runs_jobs_in_order_and_reports() {
+        let server = playlist_server(false).await;
+        let events = run_jobs(
+            shared_for(&server),
+            1,
+            vec![
+                job(1, remove("pl1", 0)),
+                job(
+                    1,
+                    Effect::ReplacePlaylistSongs {
+                        id: "pl1".into(),
+                        song_ids: vec!["a".into(), "b".into()],
+                    },
+                ),
+                job(
+                    1,
+                    Effect::AddToPlaylist {
+                        id: "pl1".into(),
+                        song_ids: vec!["a".into(), "b".into(), "c".into()],
+                    },
+                ),
+            ],
+        )
+        .await;
         assert_eq!(
-            mutated,
+            mutated_results(&events),
             [
                 Ok("Removed from Mix".to_string()),
                 Ok(String::new()),
                 Ok("Added 3 songs to Mix".to_string()),
             ]
         );
-        let writes: Vec<String> = server
-            .received_requests()
+        let writes: Vec<String> = paths(&server)
             .await
-            .unwrap()
-            .iter()
-            .filter(|r| r.url.path() != "/rest/getPlaylist" && r.url.path() != "/rest/getPlaylists")
-            .map(|r| r.url.query().unwrap_or_default().to_string())
+            .into_iter()
+            .filter(|p| !p.starts_with("getPlaylist"))
             .collect();
         assert_eq!(writes.len(), 3);
-        assert!(writes[0].contains("songIndexToRemove=1"), "{writes:?}");
+        assert!(writes[0].contains("songIndexToRemove=0"), "{writes:?}");
         assert!(writes[1].contains("songId=a&songId=b"), "{writes:?}");
         assert!(writes[2].contains("songIdToAdd=c"), "{writes:?}");
+    }
+
+    #[tokio::test]
+    async fn playlist_reads_run_after_queued_writes() {
+        let server = playlist_server(false).await;
+        let events = run_jobs(
+            shared_for(&server),
+            1,
+            vec![
+                job(1, remove("pl1", 0)),
+                job(1, Effect::LoadPlaylist("pl1".into())),
+            ],
+        )
+        .await;
+        let calls = paths(&server).await;
+        let write = calls.iter().position(|p| p.starts_with("updatePlaylist"));
+        let loads: Vec<_> = calls
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.starts_with("getPlaylist?"))
+            .map(|(i, _)| i)
+            .collect();
+        assert!(write.unwrap() < *loads.last().unwrap(), "{calls:?}");
+        assert!(matches!(
+            events.last(),
+            Some(ApiResult::Playlist { result: Ok(_), .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn a_failed_job_skips_queued_jobs_for_that_playlist() {
+        let server = playlist_server(true).await;
+        let events = run_jobs(
+            shared_for(&server),
+            1,
+            vec![
+                job(1, remove("pl1", 1)),
+                job(
+                    1,
+                    Effect::ReplacePlaylistSongs {
+                        id: "pl1".into(),
+                        song_ids: vec!["x".into()],
+                    },
+                ),
+                job(1, remove("pl2", 0)),
+            ],
+        )
+        .await;
+        // Every job reports once, so the app's pending count settles.
+        let results = mutated_results(&events);
+        assert_eq!(results.len(), 3, "{results:?}");
+        assert!(results[0].is_err());
+        assert_eq!(results[1], Ok(String::new()));
+        let calls = paths(&server).await;
+        assert!(
+            !calls.iter().any(|p| p.contains("songId=x")),
+            "skipped job reached the server: {calls:?}"
+        );
+        assert!(
+            calls.iter().any(|p| p.contains("playlistId=pl2")),
+            "{calls:?}"
+        );
+        // The skip reports land before the reload of the failed playlist.
+        let reload = events
+            .iter()
+            .position(|e| matches!(e, ApiResult::PlaylistReloaded { .. }))
+            .unwrap();
+        let last_skip = events
+            .iter()
+            .position(
+                |e| matches!(e, ApiResult::PlaylistMutated { result: Ok(m), .. } if m.is_empty()),
+            )
+            .unwrap();
+        assert!(last_skip < reload);
+    }
+
+    #[tokio::test]
+    async fn jobs_from_an_earlier_session_are_dropped() {
+        let server = playlist_server(false).await;
+        let events = run_jobs(
+            shared_for(&server),
+            2,
+            vec![job(1, Effect::DeletePlaylist("pl1".into()))],
+        )
+        .await;
+        assert!(events.is_empty());
+        assert!(paths(&server).await.is_empty());
     }
 
     async fn run_loop_briefly() -> anyhow::Result<()> {

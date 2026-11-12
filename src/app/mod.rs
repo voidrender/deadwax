@@ -118,7 +118,18 @@ pub enum ApiResult {
     },
     /// A playlist mutation finished. `Ok` carries the status to show (empty
     /// for none).
-    PlaylistMutated(Result<String, String>),
+    PlaylistMutated {
+        result: Result<String, String>,
+        /// The playlist the mutation targeted, if any. A failure marks it
+        /// as refreshing until the reload lands.
+        id: Option<String>,
+    },
+    /// A playlist worker result tagged with the session it belongs to.
+    /// Results from before a logout or login are dropped.
+    Session {
+        session: u64,
+        inner: Box<ApiResult>,
+    },
 }
 
 impl std::fmt::Debug for ApiResult {
@@ -175,7 +186,16 @@ impl std::fmt::Debug for ApiResult {
                 .field("id", id)
                 .field("result", result)
                 .finish(),
-            Self::PlaylistMutated(r) => f.debug_tuple("PlaylistMutated").field(r).finish(),
+            Self::PlaylistMutated { result, id } => f
+                .debug_struct("PlaylistMutated")
+                .field("result", result)
+                .field("id", id)
+                .finish(),
+            Self::Session { session, inner } => f
+                .debug_struct("Session")
+                .field("session", session)
+                .field("inner", inner)
+                .finish(),
         }
     }
 }
@@ -337,6 +357,9 @@ pub struct App {
     pub library: LibraryState,
     pub search: SearchState,
     pub playlists: PlaylistsState,
+    /// Bumped on every login and logout. Playlist jobs and their results
+    /// carry it so work from an earlier session is dropped.
+    pub session: u64,
     /// Songs with a star toggle in flight, mapped to their value before it.
     pub pending_stars: std::collections::HashMap<String, bool>,
     pub now_playing: bool,
@@ -384,6 +407,7 @@ impl App {
         self.library = LibraryState::default();
         self.search = SearchState::default();
         self.playlists = PlaylistsState::default();
+        self.session += 1;
         self.pending_stars.clear();
         self.login = LoginState {
             server: server.to_string(),
@@ -461,6 +485,7 @@ impl App {
                 self.library = LibraryState::default();
                 self.search = SearchState::default();
                 self.playlists = PlaylistsState::default();
+                self.session += 1;
                 return self.library.start();
             }
             ApiResult::LoginFailed(msg) => {
@@ -478,7 +503,13 @@ impl App {
             r @ (ApiResult::Playlists(_)
             | ApiResult::Playlist { .. }
             | ApiResult::PlaylistReloaded { .. }
-            | ApiResult::PlaylistMutated(_)) => return self.handle_playlist_result(r),
+            | ApiResult::PlaylistMutated { .. }) => return self.handle_playlist_result(r),
+            ApiResult::Session { session, inner } => {
+                if session != self.session {
+                    return Vec::new();
+                }
+                return self.handle_api(*inner);
+            }
             other => return self.handle_library_result(other),
         }
         Vec::new()

@@ -214,6 +214,7 @@ mod tests {
             render(&mut app, w, h);
             app.popup = Some(Popup::PlaylistPicker(PickerState {
                 song_ids: vec!["a".into()],
+                songs: vec![],
                 lists: crate::app::library::Loadable::Loading,
                 sel: 3,
             }));

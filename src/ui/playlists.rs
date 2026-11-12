@@ -201,6 +201,7 @@ mod tests {
     fn picker_lists_new_playlist_first() {
         let picker = PickerState {
             song_ids: vec!["a".into(), "b".into()],
+            songs: vec![],
             lists: Loadable::Loaded(vec![playlist("Mix")]),
             sel: 0,
         };
