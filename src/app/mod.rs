@@ -217,6 +217,8 @@ pub enum AppEvent {
     },
     /// Cover art resized and encoded off the UI thread.
     ArtResized(ResizeDone),
+    /// A message from a background service, shown for a while.
+    Status(String),
 }
 
 /// Side effects the runtime carries out for the app. Player commands go
@@ -491,6 +493,10 @@ impl App {
             }
             AppEvent::ArtResized(done) => {
                 self.art.finish_resize(done);
+                Vec::new()
+            }
+            AppEvent::Status(msg) => {
+                self.set_long_status(msg);
                 Vec::new()
             }
         }

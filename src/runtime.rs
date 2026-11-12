@@ -2,15 +2,21 @@ use crate::app::login::login_error_message;
 use crate::app::playlists::songs_label;
 use crate::app::search::SEARCH_LIMIT;
 use crate::app::{ApiResult, App, AppEvent, Effect};
-use crate::art::CoverCache;
+use crate::art::{ArtQuery, CoverCache, Endpoints, PublicArtResolver};
 use crate::config::Config;
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
+use crate::integrations::discord::{self, PresenceMsg};
+use crate::integrations::hub::{Hub, HubPorts};
+use crate::integrations::notify::{self, Notifier, TrackNotification};
 use crate::paths;
+use crate::player::persist::PersistedQueue;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
+use crate::scrobble::{Outbox, PendingScrobble, ScrobbleAction};
 use crate::subsonic::{Auth, SubsonicClient, SubsonicError};
 use crate::ui;
 use crate::ui::art::ResizeJob;
 use crossterm::event::{Event, EventStream};
+use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
 use image::DynamicImage;
 use ratatui::Terminal;
@@ -20,8 +26,9 @@ use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
-use std::time::Duration;
-use tokio::sync::{mpsc, watch};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use tokio::sync::{mpsc, oneshot, watch};
+use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 /// Set by the panic hook. A panic in a spawned task does not end the
@@ -53,6 +60,10 @@ const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
 /// Pixel size requested for cover art.
 const COVER_SIZE: u32 = 600;
+/// How often the queue is saved while it has songs.
+const SAVE_INTERVAL: Duration = Duration::from_secs(30);
+/// How often scrobbles waiting in the outbox are retried.
+const OUTBOX_INTERVAL: Duration = Duration::from_secs(60);
 
 /// The logged-in client, shared with the engine's `url_for`. `None` while
 /// logged out.
@@ -102,6 +113,11 @@ pub struct Ctx {
     playlist_rx: Option<mpsc::UnboundedReceiver<Job>>,
     /// The app's session, mirrored so the worker can drop stale jobs.
     session: Arc<AtomicU64>,
+    /// Engine events are copied here for the integration hub. `None` until
+    /// `run` starts it.
+    hub: Option<mpsc::UnboundedSender<EngineEvent>>,
+    /// Where the queue is saved. `None` turns saving and restoring off.
+    state_path: Option<PathBuf>,
 }
 
 impl Ctx {
@@ -126,6 +142,8 @@ impl Ctx {
             playlist_tx,
             playlist_rx: Some(playlist_rx),
             session: Arc::new(AtomicU64::new(0)),
+            hub: None,
+            state_path: None,
         }
     }
 }
@@ -151,8 +169,10 @@ where
             ctx.tx.clone(),
         ));
     }
+    let services = start_services(&mut ctx);
     let result = event_loop(terminal, app, &mut ctx, EventStream::new()).await;
     shutdown_engine(&mut ctx).await;
+    services.stop().await;
     result
 }
 
@@ -179,6 +199,9 @@ where
     for effect in app.on_start() {
         execute(effect, &mut app, ctx);
     }
+    if current_client(&ctx.client).is_some() {
+        spawn_restore(ctx);
+    }
     draw(terminal, &mut app)?;
 
     while !app.should_quit {
@@ -201,7 +224,12 @@ where
                 }
             },
             ev = ctx.engine_events.recv(), if engine_open => match ev {
-                Some(ev) => AppEvent::Engine(ev),
+                Some(ev) => {
+                    if let Some(hub) = &ctx.hub {
+                        let _ = hub.send(ev.clone());
+                    }
+                    AppEvent::Engine(ev)
+                }
                 None => {
                     engine_open = false;
                     continue;
@@ -210,6 +238,7 @@ where
         };
         if let AppEvent::Api(ApiResult::LoggedIn { client, .. }) = &ev {
             set_client(&ctx.client, Some(client.clone()));
+            spawn_restore(ctx);
         }
         let effects = app.handle_event(ev);
         ctx.session.store(app.session, Ordering::SeqCst);
@@ -835,6 +864,324 @@ async fn shutdown_engine(ctx: &mut Ctx) {
     }
 }
 
+const OUTBOX_UNAVAILABLE: &str =
+    "Couldn't open the scrobble outbox. Scrobbles made offline will be lost.";
+
+fn unix_ms() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
+}
+
+/// Background work stopped after the UI quits: the outbox retry timer, the
+/// queue saver, and Discord presence. The hub task ends on its own when
+/// `Ctx` drops its sender.
+struct Services {
+    presence: Option<mpsc::UnboundedSender<PresenceMsg>>,
+    flusher: JoinHandle<()>,
+    saver_stop: oneshot::Sender<()>,
+    saver: JoinHandle<()>,
+}
+
+impl Services {
+    /// Runs after the engine has stopped, so the saver writes the final
+    /// queue and position.
+    async fn stop(self) {
+        self.flusher.abort();
+        let _ = self.saver_stop.send(());
+        if tokio::time::timeout(SHUTDOWN_GRACE, self.saver)
+            .await
+            .is_err()
+        {
+            tracing::warn!("saving the queue did not finish in time");
+        }
+        if let Some(presence) = &self.presence {
+            let _ = presence.send(PresenceMsg::Shutdown);
+        }
+    }
+}
+
+fn start_services(ctx: &mut Ctx) -> Services {
+    let config = Config::load(&ctx.config_path).ok().flatten();
+    let presence = config.as_ref().and_then(|c| {
+        let app_id = c.discord_app_id.as_deref()?.trim();
+        (!app_id.is_empty())
+            .then(|| discord::spawn_presence(app_id.to_string(), c.discord_default_image.clone()))
+    });
+    let data = paths::data_dir();
+    let cache = paths::cache_dir();
+    let outbox = match Outbox::open(data.join("outbox.json")) {
+        Ok(o) => Some(o),
+        Err(e) => {
+            tracing::warn!("scrobble outbox unavailable: {e:#}");
+            let _ = ctx
+                .tx
+                .send(AppEvent::Status(OUTBOX_UNAVAILABLE.to_string()));
+            None
+        }
+    };
+    let outbox: SharedOutbox = Arc::new(tokio::sync::Mutex::new(outbox));
+    let ports = LivePorts {
+        client: ctx.client.clone(),
+        covers: cache.join("art"),
+        public: PublicArtResolver::new(Endpoints::public(), cache.join("public_art.json")),
+        notifier: notify::platform_notifier().into(),
+        notify_failed: Arc::new(AtomicBool::new(false)),
+        presence: presence.clone(),
+        outbox: Arc::clone(&outbox),
+        tx: ctx.tx.clone(),
+    };
+    let (hub_tx, hub_rx) = mpsc::unbounded_channel();
+    tokio::spawn(hub_task(Hub::new(ports), hub_rx));
+    ctx.hub = Some(hub_tx);
+
+    let flusher = tokio::spawn(outbox_flusher(ctx.client.clone(), outbox));
+
+    let state_path = data.join("state.json");
+    ctx.state_path = Some(state_path.clone());
+    let (saver_stop, stop_rx) = oneshot::channel();
+    let saver = tokio::spawn(queue_saver(state_path, ctx.snapshot.clone(), stop_rx));
+    Services {
+        presence,
+        flusher,
+        saver_stop,
+        saver,
+    }
+}
+
+/// Feeds engine events to the hub one at a time, in order. Slow lookups
+/// only hold up the hub, never the UI.
+async fn hub_task<P: HubPorts>(mut hub: Hub<P>, mut rx: mpsc::UnboundedReceiver<EngineEvent>) {
+    while let Some(ev) = rx.recv().await {
+        hub.on_event(&ev, unix_ms()).await;
+    }
+}
+
+/// `None` when the outbox file could not be opened; scrobbles then go
+/// straight to the server with no offline queue.
+type SharedOutbox = Arc<tokio::sync::Mutex<Option<Outbox>>>;
+
+/// The hub's real connections. Server calls skip quietly while logged out.
+struct LivePorts {
+    client: SharedClient,
+    covers: PathBuf,
+    public: PublicArtResolver,
+    notifier: Arc<dyn Notifier>,
+    /// A notification has failed this session, so later failures stay quiet.
+    notify_failed: Arc<AtomicBool>,
+    /// `None` when Discord presence is off.
+    presence: Option<mpsc::UnboundedSender<PresenceMsg>>,
+    outbox: SharedOutbox,
+    tx: mpsc::UnboundedSender<AppEvent>,
+}
+
+impl HubPorts for LivePorts {
+    fn scrobble(&self, a: ScrobbleAction) {
+        if let Some(client) = current_client(&self.client) {
+            tokio::spawn(send_scrobble(client, Arc::clone(&self.outbox), a));
+        }
+    }
+
+    fn notify(&self, n: TrackNotification) {
+        let notifier = Arc::clone(&self.notifier);
+        let failed = Arc::clone(&self.notify_failed);
+        let tx = self.tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let Err(e) = notifier.notify(&n) else {
+                return;
+            };
+            if failed.swap(true, Ordering::SeqCst) {
+                tracing::debug!("notification failed: {e:#}");
+            } else {
+                tracing::warn!("notification failed: {e:#}");
+                let _ = tx.send(AppEvent::Status(format!("Notifications unavailable: {e}")));
+            }
+        });
+    }
+
+    fn presence(&self, m: PresenceMsg) {
+        if let Some(tx) = &self.presence {
+            let _ = tx.send(m);
+        }
+    }
+
+    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<String>> {
+        let client = current_client(&self.client);
+        let id = album_id.to_string();
+        Box::pin(async move {
+            match client?.get_album(&id).await {
+                Ok(a) => a.album.music_brainz_id.filter(|m| !m.trim().is_empty()),
+                Err(e) => {
+                    tracing::warn!("album {id} lookup failed: {e}");
+                    None
+                }
+            }
+        })
+    }
+
+    fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>> {
+        let client = current_client(&self.client);
+        let dir = self.covers.clone();
+        let id = cover_id.to_string();
+        Box::pin(async move {
+            match CoverCache::new(dir, client?).get(&id, COVER_SIZE).await {
+                Ok(path) => Some(path),
+                Err(e) => {
+                    tracing::warn!("cover {id} unavailable for the notification: {e:#}");
+                    None
+                }
+            }
+        })
+    }
+
+    fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>> {
+        Box::pin(async move { self.public.resolve(&q).await })
+    }
+}
+
+/// Sends one scrobble. A submission the server could not be reached for
+/// waits in the outbox; any success retries what is waiting there.
+async fn send_scrobble(client: SubsonicClient, outbox: SharedOutbox, action: ScrobbleAction) {
+    let (song_id, time_ms, submission) = match action {
+        ScrobbleAction::NowPlaying { song_id } => (song_id, unix_ms(), false),
+        ScrobbleAction::Submit { song_id, time_ms } => (song_id, time_ms, true),
+    };
+    match client.scrobble(&song_id, time_ms, submission).await {
+        Ok(()) => flush_outbox(&client, &outbox).await,
+        Err(SubsonicError::Network(e)) if submission => {
+            tracing::info!(%song_id, "server unreachable, keeping the scrobble: {e}");
+            let mut guard = outbox.lock().await;
+            match guard.as_mut() {
+                Some(ob) => {
+                    if let Err(e) = ob.push(PendingScrobble { song_id, time_ms }) {
+                        tracing::warn!("saving the scrobble outbox failed: {e:#}");
+                    }
+                }
+                None => tracing::warn!(%song_id, "no outbox, scrobble dropped"),
+            }
+        }
+        Err(e) => tracing::warn!(%song_id, submission, "scrobble failed: {e}"),
+    }
+}
+
+async fn flush_outbox(client: &SubsonicClient, outbox: &SharedOutbox) {
+    let mut guard = outbox.lock().await;
+    let Some(ob) = guard.as_mut().filter(|ob| !ob.is_empty()) else {
+        return;
+    };
+    let result = ob
+        .flush(|p| {
+            let c = client.clone();
+            async move { c.scrobble(&p.song_id, p.time_ms, true).await }
+        })
+        .await;
+    match result {
+        Ok(0) => {}
+        Ok(n) => tracing::info!("sent {n} queued scrobbles"),
+        Err(e) => tracing::warn!("flushing the scrobble outbox failed: {e:#}"),
+    }
+}
+
+/// Retries the outbox at startup and then every `OUTBOX_INTERVAL`.
+async fn outbox_flusher(client: SharedClient, outbox: SharedOutbox) {
+    let mut tick = tokio::time::interval(OUTBOX_INTERVAL);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    loop {
+        tick.tick().await;
+        if let Some(c) = current_client(&client) {
+            flush_outbox(&c, &outbox).await;
+        }
+    }
+}
+
+/// Saves the queue every `SAVE_INTERVAL` while it has songs, right away
+/// when it is emptied, and once more when told to stop. A queue that never
+/// had songs this run is never written, so quitting from the login screen
+/// keeps the saved queue.
+async fn queue_saver(
+    path: PathBuf,
+    mut snapshot: watch::Receiver<PlayerSnapshot>,
+    mut stop: oneshot::Receiver<()>,
+) {
+    let start = tokio::time::Instant::now() + SAVE_INTERVAL;
+    let mut tick = tokio::time::interval_at(start, SAVE_INTERVAL);
+    tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
+    // The queue had songs since it was last saved empty.
+    let mut live = false;
+    let mut open = true;
+    loop {
+        tokio::select! {
+            _ = &mut stop => break,
+            _ = tick.tick() => {
+                let snap = snapshot.borrow().clone();
+                if !snap.items.is_empty() {
+                    save_queue(&path, &snap).await;
+                }
+            }
+            changed = snapshot.changed(), if open => match changed {
+                Ok(()) => {
+                    let empty = snapshot.borrow_and_update().items.is_empty();
+                    if !empty {
+                        live = true;
+                    } else if live {
+                        live = false;
+                        save_queue(&path, &PlayerSnapshot::default()).await;
+                    }
+                }
+                Err(_) => open = false,
+            },
+        }
+    }
+    let snap = snapshot.borrow().clone();
+    if live || !snap.items.is_empty() {
+        save_queue(&path, &snap).await;
+    }
+}
+
+async fn save_queue(path: &Path, snap: &PlayerSnapshot) {
+    let state = PersistedQueue::from_snapshot(snap);
+    let path = path.to_path_buf();
+    match tokio::task::spawn_blocking(move || state.save(&path)).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => tracing::warn!("saving the queue failed: {e:#}"),
+        Err(e) => tracing::warn!("saving the queue failed: {e}"),
+    }
+}
+
+/// Restores the saved queue, paused, unless something is already queued.
+fn spawn_restore(ctx: &Ctx) {
+    if let Some(path) = ctx.state_path.clone() {
+        tokio::spawn(restore_queue(
+            path,
+            ctx.snapshot.clone(),
+            ctx.player.clone(),
+        ));
+    }
+}
+
+/// A missing or unreadable state file is logged and skipped.
+async fn restore_queue(
+    path: PathBuf,
+    snapshot: watch::Receiver<PlayerSnapshot>,
+    player: mpsc::UnboundedSender<PlayerCommand>,
+) {
+    let saved = match tokio::task::spawn_blocking(move || PersistedQueue::load(&path)).await {
+        Ok(Ok(Some(saved))) if !saved.songs.is_empty() => saved,
+        Ok(Ok(_)) => return,
+        Ok(Err(e)) => {
+            tracing::warn!("ignoring the saved queue: {e:#}");
+            return;
+        }
+        Err(e) => {
+            tracing::warn!("loading the saved queue failed: {e}");
+            return;
+        }
+    };
+    if snapshot.borrow().items.is_empty() {
+        let _ = player.send(PlayerCommand::Restore(saved));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1283,6 +1630,149 @@ mod tests {
         )
         .await
         .expect("loop kept running")
+    }
+
+    fn snap_with(ids: &[&str]) -> PlayerSnapshot {
+        let items = ids
+            .iter()
+            .enumerate()
+            .map(|(i, id)| crate::player::queue::QueueItem {
+                uid: i as u64,
+                song: serde_json::from_value(serde_json::json!({"id": id, "title": id})).unwrap(),
+            })
+            .collect();
+        PlayerSnapshot {
+            items,
+            current: Some(0),
+            status: crate::player::Status::Paused,
+            position: 7.0,
+            volume: 80,
+            ..PlayerSnapshot::default()
+        }
+    }
+
+    fn saved_ids(path: &Path) -> Option<Vec<String>> {
+        PersistedQueue::load(path)
+            .unwrap()
+            .map(|p| p.songs.into_iter().map(|s| s.id).collect())
+    }
+
+    #[tokio::test]
+    async fn queue_saver_writes_on_stop_only_after_songs() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+
+        // Nothing was ever queued: an earlier saved queue is left alone.
+        let (_tx, rx) = watch::channel(PlayerSnapshot::default());
+        let (stop, stop_rx) = oneshot::channel();
+        let saver = tokio::spawn(queue_saver(path.clone(), rx, stop_rx));
+        stop.send(()).unwrap();
+        saver.await.unwrap();
+        assert!(!path.exists());
+
+        let (tx, rx) = watch::channel(PlayerSnapshot::default());
+        let (stop, stop_rx) = oneshot::channel();
+        let saver = tokio::spawn(queue_saver(path.clone(), rx, stop_rx));
+        tx.send(snap_with(&["a", "b"])).unwrap();
+        tokio::task::yield_now().await;
+        // The engine is gone by the time the final save runs.
+        drop(tx);
+        stop.send(()).unwrap();
+        saver.await.unwrap();
+        let saved = PersistedQueue::load(&path).unwrap().unwrap();
+        assert_eq!(saved.position, 7.0);
+        assert_eq!(saved.volume, 80);
+        assert_eq!(saved_ids(&path).unwrap(), ["a", "b"]);
+    }
+
+    #[tokio::test]
+    async fn queue_saver_records_a_cleared_queue_right_away() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        PersistedQueue::from_snapshot(&snap_with(&["old"]))
+            .save(&path)
+            .unwrap();
+        let (tx, rx) = watch::channel(PlayerSnapshot::default());
+        let (_stop, stop_rx) = oneshot::channel();
+        tokio::spawn(queue_saver(path.clone(), rx, stop_rx));
+        tx.send(snap_with(&["a"])).unwrap();
+        tokio::task::yield_now().await;
+        tx.send(PlayerSnapshot::default()).unwrap();
+        for _ in 0..200 {
+            if saved_ids(&path).is_some_and(|ids| ids.is_empty()) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("cleared queue was not saved: {:?}", saved_ids(&path));
+    }
+
+    #[tokio::test]
+    async fn restore_only_fills_an_empty_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("state.json");
+        let (player, mut player_rx) = mpsc::unbounded_channel();
+
+        // Missing and corrupt files are skipped.
+        let (_tx, empty) = watch::channel(PlayerSnapshot::default());
+        restore_queue(path.clone(), empty.clone(), player.clone()).await;
+        std::fs::write(&path, "{nope").unwrap();
+        restore_queue(path.clone(), empty.clone(), player.clone()).await;
+        assert!(player_rx.try_recv().is_err());
+
+        let saved = PersistedQueue::from_snapshot(&snap_with(&["a", "b"]));
+        saved.save(&path).unwrap();
+        let (_tx2, busy) = watch::channel(snap_with(&["x"]));
+        restore_queue(path.clone(), busy, player.clone()).await;
+        assert!(player_rx.try_recv().is_err());
+
+        restore_queue(path.clone(), empty, player).await;
+        assert_eq!(player_rx.try_recv().unwrap(), PlayerCommand::Restore(saved));
+    }
+
+    #[tokio::test]
+    async fn unsent_submissions_wait_in_the_outbox() {
+        use wiremock::matchers::path;
+        use wiremock::{Mock, MockServer};
+
+        let dir = tempfile::tempdir().unwrap();
+        let outbox_path = dir.path().join("outbox.json");
+        let outbox: SharedOutbox = Arc::new(tokio::sync::Mutex::new(Some(
+            Outbox::open(outbox_path.clone()).unwrap(),
+        )));
+        let offline =
+            SubsonicClient::new("http://127.0.0.1:1", "alice", Auth::Password("p".into())).unwrap();
+        let submit = |id: &str| ScrobbleAction::Submit {
+            song_id: id.into(),
+            time_ms: 5,
+        };
+        send_scrobble(offline.clone(), Arc::clone(&outbox), submit("a")).await;
+        // Now playing is not worth keeping.
+        send_scrobble(
+            offline,
+            Arc::clone(&outbox),
+            ScrobbleAction::NowPlaying {
+                song_id: "b".into(),
+            },
+        )
+        .await;
+        assert_eq!(Outbox::open(outbox_path.clone()).unwrap().len(), 1);
+
+        let server = MockServer::start().await;
+        Mock::given(path("/rest/scrobble"))
+            .respond_with(wire(
+                serde_json::json!({"subsonic-response":{"status":"ok","version":"1.16.1"}}),
+            ))
+            .mount(&server)
+            .await;
+        let online =
+            SubsonicClient::new(&server.uri(), "alice", Auth::Password("p".into())).unwrap();
+        send_scrobble(online, Arc::clone(&outbox), submit("c")).await;
+        assert!(Outbox::open(outbox_path).unwrap().is_empty());
+        let sent: Vec<String> = paths(&server).await;
+        assert_eq!(sent.len(), 2, "{sent:?}");
+        assert!(sent[0].contains("id=c") && sent[0].contains("submission=true"));
+        assert!(sent[1].contains("id=a") && sent[1].contains("time=5"));
     }
 
     /// One test covers both cases because the flag is process-wide.
