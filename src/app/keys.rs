@@ -18,6 +18,8 @@ pub enum Action {
     VolumeDown,
     ToggleShuffle,
     CycleRepeat,
+    ToggleStar,
+    PlayRandom,
 }
 
 /// Seconds moved by `]` and `[`.
@@ -58,6 +60,8 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
         '-' => Action::VolumeDown,
         's' => Action::ToggleShuffle,
         'r' => Action::CycleRepeat,
+        'R' => Action::PlayRandom,
+        'f' => Action::ToggleStar,
         _ => return None,
     })
 }
@@ -72,6 +76,11 @@ pub const HELP: &[(&str, &str)] = &[
     ("= -", "Volume +5 / -5"),
     ("s", "Toggle shuffle"),
     ("r", "Cycle repeat: off, all, one"),
+    ("R", "Play 200 random songs"),
+    ("f", "Toggle favorite on selected song"),
+    ("j k h l", "Move in lists and columns"),
+    ("Enter", "Play from selection"),
+    ("e p", "Append / play next"),
     ("?", "Toggle this help"),
     ("Esc", "Close popup or help"),
     ("X", "Log out"),

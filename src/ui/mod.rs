@@ -1,10 +1,11 @@
 pub mod help;
+pub mod library;
 pub mod login;
 pub mod strip;
 pub mod theme;
 pub mod widgets;
 
-use crate::app::{App, Popup, Screen};
+use crate::app::{App, Popup, Screen, View};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
@@ -37,7 +38,11 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
         .border_type(BorderType::Rounded)
         .border_style(theme::border())
         .title(Span::styled(format!(" {title} "), theme::accent_bold()));
+    let inner = block.inner(main);
     frame.render_widget(block, main);
+    if !app.now_playing && app.view == View::Library {
+        library::draw(frame, inner, &app.library);
+    }
     strip::draw(frame, strip_area, app);
 }
 

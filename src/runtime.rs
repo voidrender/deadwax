@@ -4,12 +4,13 @@ use crate::config::Config;
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
 use crate::paths;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
-use crate::subsonic::{Auth, SubsonicClient};
+use crate::subsonic::{Auth, SubsonicClient, SubsonicError};
 use crate::ui;
 use crossterm::event::{Event, EventStream};
 use futures::{Stream, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -142,6 +143,9 @@ where
 
     check_panicked()?;
     app.player = ctx.snapshot.borrow_and_update().clone();
+    for effect in app.on_start() {
+        execute(effect, &mut app, ctx);
+    }
     terminal.draw(|f| ui::draw(f, &mut app))?;
 
     while !app.should_quit {
@@ -209,7 +213,90 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             });
         }
         Effect::Logout => logout(app, ctx),
+        Effect::LoadArtists => spawn_api(
+            ctx,
+            |c| async move { c.get_artists().await },
+            ApiResult::Artists,
+        ),
+        Effect::LoadArtist(id) => {
+            let key = id.clone();
+            spawn_api(
+                ctx,
+                |c| async move { c.get_artist(&id).await.map(|a| a.albums) },
+                move |result| ApiResult::Artist { id: key, result },
+            );
+        }
+        Effect::LoadAlbum(id) => {
+            let key = id.clone();
+            spawn_api(
+                ctx,
+                |c| async move { c.get_album(&id).await.map(|a| a.songs) },
+                move |result| ApiResult::Album { id: key, result },
+            );
+        }
+        Effect::LoadFavorites => spawn_api(
+            ctx,
+            |c| async move { c.get_starred_songs().await },
+            ApiResult::Favorites,
+        ),
+        Effect::PlayRandom(n) => spawn_api(
+            ctx,
+            move |c| async move { c.get_random_songs(n).await },
+            ApiResult::Random,
+        ),
+        Effect::ToggleStar { song_id, starred } => {
+            let key = song_id.clone();
+            spawn_api(
+                ctx,
+                move |c| async move {
+                    if starred {
+                        c.star(&song_id).await
+                    } else {
+                        c.unstar(&song_id).await
+                    }
+                },
+                move |result| ApiResult::Starred {
+                    song_id: key,
+                    starred,
+                    result,
+                },
+            );
+        }
+        Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),
+        Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, id, true),
     }
+}
+
+const NOT_LOGGED_IN: &str = "Not logged in";
+
+/// Runs one client call off the UI task and reports `wrap(result)` back.
+/// Errors become their (URL-free) display text.
+fn spawn_api<T, F, Fut>(
+    ctx: &Ctx,
+    call: F,
+    wrap: impl FnOnce(Result<T, String>) -> ApiResult + Send + 'static,
+) where
+    T: Send + 'static,
+    F: FnOnce(SubsonicClient) -> Fut + Send + 'static,
+    Fut: Future<Output = Result<T, SubsonicError>> + Send + 'static,
+{
+    let client = current_client(&ctx.client);
+    let tx = ctx.tx.clone();
+    tokio::spawn(async move {
+        let result = match client {
+            Some(c) => call(c).await.map_err(|e| e.to_string()),
+            None => Err(NOT_LOGGED_IN.to_string()),
+        };
+        let _ = tx.send(AppEvent::Api(wrap(result)));
+    });
+}
+
+fn spawn_album_queue(ctx: &Ctx, id: String, next: bool) {
+    spawn_api(
+        ctx,
+        |c| async move { c.get_album(&id).await.map(|a| a.songs) },
+        move |result| ApiResult::AlbumQueued { next, result },
+    );
 }
 
 /// Checks the credentials against the server, then stores them. Errors are

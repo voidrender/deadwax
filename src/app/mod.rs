@@ -1,12 +1,14 @@
 pub mod keys;
+pub mod library;
 pub mod login;
 
 use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
-use crate::subsonic::SubsonicClient;
+use crate::subsonic::{Album, Artist, Song, SubsonicClient};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use image::DynamicImage;
 use keys::{Action, SEEK_STEP, VOLUME_STEP};
+use library::{LibraryState, RANDOM_COUNT};
 use login::{LoginField, LoginState};
 use std::time::{Duration, Instant};
 
@@ -67,6 +69,27 @@ pub enum ApiResult {
     /// The saved login was removed in the background. `Err` carries a
     /// user-facing message when something could not be cleaned up.
     LoggedOut(Result<(), String>),
+    Artists(Result<Vec<Artist>, String>),
+    Artist {
+        id: String,
+        result: Result<Vec<Album>, String>,
+    },
+    Album {
+        id: String,
+        result: Result<Vec<Song>, String>,
+    },
+    Favorites(Result<Vec<Song>, String>),
+    Starred {
+        song_id: String,
+        starred: bool,
+        result: Result<(), String>,
+    },
+    Random(Result<Vec<Song>, String>),
+    /// An album fetched to be appended (`next` false) or played next.
+    AlbumQueued {
+        next: bool,
+        result: Result<Vec<Song>, String>,
+    },
 }
 
 impl std::fmt::Debug for ApiResult {
@@ -79,6 +102,34 @@ impl std::fmt::Debug for ApiResult {
                 .finish_non_exhaustive(),
             Self::LoginFailed(msg) => f.debug_tuple("LoginFailed").field(msg).finish(),
             Self::LoggedOut(r) => f.debug_tuple("LoggedOut").field(r).finish(),
+            Self::Artists(r) => f.debug_tuple("Artists").field(r).finish(),
+            Self::Artist { id, result } => f
+                .debug_struct("Artist")
+                .field("id", id)
+                .field("result", result)
+                .finish(),
+            Self::Album { id, result } => f
+                .debug_struct("Album")
+                .field("id", id)
+                .field("result", result)
+                .finish(),
+            Self::Favorites(r) => f.debug_tuple("Favorites").field(r).finish(),
+            Self::Starred {
+                song_id,
+                starred,
+                result,
+            } => f
+                .debug_struct("Starred")
+                .field("song_id", song_id)
+                .field("starred", starred)
+                .field("result", result)
+                .finish(),
+            Self::Random(r) => f.debug_tuple("Random").field(r).finish(),
+            Self::AlbumQueued { next, result } => f
+                .debug_struct("AlbumQueued")
+                .field("next", next)
+                .field("result", result)
+                .finish(),
         }
     }
 }
@@ -110,6 +161,17 @@ pub enum Effect {
     },
     Logout,
     Quit,
+    LoadArtists,
+    LoadArtist(String),
+    LoadAlbum(String),
+    LoadFavorites,
+    PlayRandom(u32),
+    ToggleStar {
+        song_id: String,
+        starred: bool,
+    },
+    AppendAlbum(String),
+    PlayNextAlbum(String),
 }
 
 impl std::fmt::Debug for Effect {
@@ -127,6 +189,18 @@ impl std::fmt::Debug for Effect {
                 .finish(),
             Self::Logout => f.write_str("Logout"),
             Self::Quit => f.write_str("Quit"),
+            Self::LoadArtists => f.write_str("LoadArtists"),
+            Self::LoadArtist(id) => f.debug_tuple("LoadArtist").field(id).finish(),
+            Self::LoadAlbum(id) => f.debug_tuple("LoadAlbum").field(id).finish(),
+            Self::LoadFavorites => f.write_str("LoadFavorites"),
+            Self::PlayRandom(n) => f.debug_tuple("PlayRandom").field(n).finish(),
+            Self::ToggleStar { song_id, starred } => f
+                .debug_struct("ToggleStar")
+                .field("song_id", song_id)
+                .field("starred", starred)
+                .finish(),
+            Self::AppendAlbum(id) => f.debug_tuple("AppendAlbum").field(id).finish(),
+            Self::PlayNextAlbum(id) => f.debug_tuple("PlayNextAlbum").field(id).finish(),
         }
     }
 }
@@ -138,6 +212,7 @@ pub struct App {
     /// The server the session is logged in to, for the logout prompt.
     pub server: String,
     pub view: View,
+    pub library: LibraryState,
     pub now_playing: bool,
     pub help: bool,
     pub popup: Option<Popup>,
@@ -180,6 +255,7 @@ impl App {
         self.now_playing = false;
         self.help = false;
         self.popup = None;
+        self.library = LibraryState::default();
         self.login = LoginState {
             server: server.to_string(),
             username: username.to_string(),
@@ -247,6 +323,8 @@ impl App {
                 if saved_to == SavedTo::File {
                     self.set_long_status(FILE_CREDENTIALS_NOTICE);
                 }
+                self.library = LibraryState::default();
+                return self.library.start();
             }
             ApiResult::LoginFailed(msg) => {
                 self.login.busy = false;
@@ -259,6 +337,7 @@ impl App {
                     self.login.warning = Some(msg);
                 }
             }
+            other => return self.handle_library_result(other),
         }
         Vec::new()
     }
@@ -280,6 +359,12 @@ impl App {
             None if self.help => {
                 self.help = false;
                 Vec::new()
+            }
+            None if self.screen == Screen::Main
+                && self.view == View::Library
+                && !self.now_playing =>
+            {
+                self.library.handle_key(key)
             }
             None => Vec::new(),
         }
@@ -329,6 +414,8 @@ impl App {
                 });
                 return Vec::new();
             }
+            Action::ToggleStar => return self.toggle_star(),
+            Action::PlayRandom => return vec![Effect::PlayRandom(RANDOM_COUNT)],
             Action::TogglePause => PlayerCommand::TogglePause,
             Action::Next => PlayerCommand::Next,
             Action::Prev => PlayerCommand::Prev,
