@@ -371,7 +371,7 @@ impl<B: AudioBackend> Engine<B> {
             && let Some(item) = self.queue.current()
         {
             tracing::info!(song_id = %item.song.id, title = %item.song.title, "track started");
-            ev.push(EngineEvent::TrackStarted(item.song.clone()));
+            ev.push(EngineEvent::TrackStarted(Box::new(item.song.clone())));
         }
     }
 
@@ -805,6 +805,7 @@ mod tests {
             suffix: None,
             bit_rate: None,
             starred: false,
+            ..Default::default()
         }
     }
 
@@ -855,7 +856,7 @@ mod tests {
         assert_eq!(e.backend.calls, [load("u:0", PLAY), append("u:1")]);
         assert_eq!(e.snapshot().status, Status::Playing);
         let ev = e.handle_backend(BackendEvent::FileStarted(1)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("0"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("0")))]);
     }
 
     #[tokio::test]
@@ -876,7 +877,7 @@ mod tests {
         let mut e = playing(3).await;
         assert!(e.handle_backend(ended(1, EndReason::Eof)).await.is_empty());
         let ev = e.handle_backend(BackendEvent::FileStarted(2)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("1"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("1")))]);
         assert_eq!(e.backend.calls, [append("u:2")]);
         assert_eq!(e.snapshot().current, Some(1));
     }
@@ -904,7 +905,7 @@ mod tests {
             )]
         );
         let ev = e.handle_backend(BackendEvent::FileStarted(2)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("1"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("1")))]);
         assert_eq!(e.backend.calls, [append("u:2")]);
     }
 
@@ -961,7 +962,7 @@ mod tests {
         // Replace ends the old entry with Stop; that is not the end of the queue.
         assert!(e.handle_backend(ended(1, EndReason::Stop)).await.is_empty());
         let ev = e.handle_backend(BackendEvent::FileStarted(3)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("1"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("1")))]);
         assert_eq!(e.snapshot().status, Status::Playing);
         assert_eq!(e.backend.calls.len(), 2);
     }
@@ -1148,7 +1149,7 @@ mod tests {
         );
         assert!(e.snapshot().shuffle);
         let ev = e.handle_backend(BackendEvent::FileStarted(3)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song(&peek))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song(&peek)))]);
     }
 
     #[tokio::test]
@@ -1183,7 +1184,7 @@ mod tests {
         e.handle_backend(BackendEvent::Paused(false)).await;
         e.handle_backend(BackendEvent::Paused(true)).await;
         let ev = e.handle_backend(BackendEvent::FileStarted(1)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("1"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("1")))]);
         let snap = e.snapshot();
         assert_eq!(snap.status, Status::Paused);
         assert_eq!(snap.position, 42.0);
@@ -1306,7 +1307,7 @@ mod tests {
         e.handle_backend(BackendEvent::Idle).await;
         assert_eq!(e.backend.calls, [load("u:x", PLAY), append("u:1")]);
         let ev = e.handle_backend(BackendEvent::FileStarted(4)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("x"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("x")))]);
         assert_eq!(current_id(&e).as_deref(), Some("x"));
     }
 
@@ -1320,7 +1321,7 @@ mod tests {
         e.handle_backend(BackendEvent::FileStarted(2)).await;
         e.handle_backend(ended(2, EndReason::Stop)).await;
         let ev = e.handle_backend(BackendEvent::FileStarted(3)).await;
-        assert_eq!(ev, [EngineEvent::TrackStarted(song("x"))]);
+        assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song("x")))]);
         assert_eq!(current_id(&e).as_deref(), Some("x"));
         assert_eq!(e.backend.calls, [append("u:1")]);
     }
@@ -1425,7 +1426,7 @@ mod tests {
         tx.send(BackendEvent::Position(3.0)).unwrap();
         assert_eq!(
             h.events.recv().await,
-            Some(EngineEvent::TrackStarted(song("0")))
+            Some(EngineEvent::TrackStarted(Box::new(song("0"))))
         );
         assert_eq!(
             h.events.recv().await,

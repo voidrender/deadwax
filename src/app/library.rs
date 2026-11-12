@@ -106,6 +106,7 @@ fn favorites_album() -> Album {
         duration: 0,
         cover_art: None,
         music_brainz_id: None,
+        ..Default::default()
     }
 }
 
@@ -648,6 +649,7 @@ mod tests {
             suffix: None,
             bit_rate: None,
             starred: false,
+            ..Default::default()
         }
     }
 

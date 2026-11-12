@@ -147,6 +147,7 @@ mod tests {
             song_count: 7,
             duration: 0,
             owner: None,
+            ..Default::default()
         }
     }
 
@@ -165,6 +166,7 @@ mod tests {
             suffix: None,
             bit_rate: None,
             starred: true,
+            ..Default::default()
         }
     }
 

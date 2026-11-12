@@ -2,7 +2,7 @@ use serde::Deserialize;
 
 use super::{Song, SubsonicClient, SubsonicError};
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Playlist {
     pub id: String,
@@ -12,6 +12,7 @@ pub struct Playlist {
     #[serde(default)]
     pub duration: u32,
     pub owner: Option<String>,
+    pub cover_art: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Deserialize)]
@@ -240,6 +241,7 @@ mod tests {
         assert_eq!(lists[0].song_count, 12);
         assert_eq!(lists[0].owner.as_deref(), Some("alice"));
         assert_eq!(lists[1].owner, None);
+        assert_eq!(lists[0].cover_art.as_deref(), Some("pl-pl-1"));
     }
 
     #[tokio::test]

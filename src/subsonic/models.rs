@@ -1,6 +1,6 @@
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Artist {
     pub id: String,
@@ -10,7 +10,7 @@ pub struct Artist {
     pub cover_art: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Album {
     pub id: String,
@@ -25,9 +25,11 @@ pub struct Album {
     pub duration: u32,
     pub cover_art: Option<String>,
     pub music_brainz_id: Option<String>,
+    pub genre: Option<String>,
+    pub play_count: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Song {
     pub id: String,
@@ -45,6 +47,15 @@ pub struct Song {
     pub cover_art: Option<String>,
     pub suffix: Option<String>,
     pub bit_rate: Option<u32>,
+    pub disc_number: Option<u32>,
+    pub genre: Option<String>,
+    pub play_count: Option<u64>,
+    /// File size in bytes.
+    pub size: Option<u64>,
+    /// In Hz. Sent by `OpenSubsonic` servers such as Navidrome.
+    pub sampling_rate: Option<u32>,
+    /// Sent by `OpenSubsonic` servers for lossless files.
+    pub bit_depth: Option<u32>,
     /// The server sends a timestamp when starred and omits the field
     /// otherwise. Saved queue state stores a plain bool.
     #[serde(default, deserialize_with = "present_as_true")]

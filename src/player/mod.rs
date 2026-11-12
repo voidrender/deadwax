@@ -60,7 +60,7 @@ pub struct PlayerSnapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineEvent {
-    TrackStarted(Song),
+    TrackStarted(Box<Song>),
     Position { pos: f64, paused: bool },
     Seeked(f64),
     PauseChanged(bool),

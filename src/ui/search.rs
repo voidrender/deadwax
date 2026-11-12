@@ -137,6 +137,7 @@ mod tests {
             suffix: None,
             bit_rate: None,
             starred: true,
+            ..Default::default()
         };
         let album = Album {
             id: "b".into(),
@@ -148,6 +149,7 @@ mod tests {
             duration: 0,
             cover_art: None,
             music_brainz_id: None,
+            ..Default::default()
         };
         let artist = Artist {
             id: "a".into(),

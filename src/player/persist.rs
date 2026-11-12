@@ -125,6 +125,7 @@ mod tests {
             suffix: None,
             bit_rate: None,
             starred,
+            ..Default::default()
         }
     }
 

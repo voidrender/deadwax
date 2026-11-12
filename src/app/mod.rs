@@ -1020,6 +1020,7 @@ mod tests {
                 suffix: None,
                 bit_rate: None,
                 starred: false,
+                ..Default::default()
             },
         }
     }

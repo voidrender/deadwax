@@ -191,6 +191,7 @@ mod tests {
             suffix: Some("flac".into()),
             bit_rate: Some(1000),
             starred: true,
+            ..Default::default()
         }
     }
 

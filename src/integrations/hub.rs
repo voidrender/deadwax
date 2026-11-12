@@ -130,12 +130,12 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
         match ev {
             EngineEvent::TrackStarted(song) => {
                 self.cancel_lookup();
-                self.current = Some(song.clone());
+                self.current = Some(Song::clone(song));
                 self.last_pos = 0.0;
                 self.announced = false;
                 let mut shown = lock(&self.shown);
                 shown.generation += 1;
-                shown.song = Some(song.clone());
+                shown.song = Some(Song::clone(song));
                 shown.image_url = None;
                 shown.set_position(0.0, now_ms);
             }
@@ -434,7 +434,10 @@ mod tests {
     #[tokio::test]
     async fn track_start_notifies_with_cover_and_updates_presence() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 1000);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            1000,
+        );
         h.on_event(&playing(0.2), 1200);
         h.settle().await;
         let calls = ports.take();
@@ -480,7 +483,10 @@ mod tests {
     #[tokio::test]
     async fn pause_clears_presence_and_resume_restores() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            0,
+        );
         h.on_event(&playing(0.5), 0);
         h.settle().await;
         h.on_event(&playing(30.0), 0);
@@ -512,7 +518,10 @@ mod tests {
     #[tokio::test]
     async fn restored_paused_track_waits_until_playing() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            0,
+        );
         h.on_event(
             &EngineEvent::Position {
                 pos: 42.0,
@@ -544,13 +553,19 @@ mod tests {
     #[tokio::test]
     async fn a_skipped_tracks_lookup_sends_nothing() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("slow"))), 0);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("slow")))),
+            0,
+        );
         h.on_event(&playing(0.1), 0);
         // The lookup for s1 starts and waits on its cover.
         tokio::task::yield_now().await;
         let stale = lock(&h.shown).generation;
 
-        h.on_event(&EngineEvent::TrackStarted(song("s2", Some("al2"))), 0);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s2", Some("al2")))),
+            0,
+        );
         h.on_event(&playing(0.1), 0);
         h.settle().await;
         ports.slow_cover.notify_waiters();
@@ -594,7 +609,10 @@ mod tests {
         };
         ports.clock.store(1000, SeqCst);
         let mut h = Hub::new(ports.clone());
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 900);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            900,
+        );
         h.on_event(&playing(10.0), 1000);
         h.settle().await;
         let ups = updates(&ports.take());
@@ -612,12 +630,15 @@ mod tests {
     async fn mbid_lookup_is_memoized() {
         let (mut h, ports) = hub();
         for id in ["s1", "s2"] {
-            h.on_event(&EngineEvent::TrackStarted(song(id, Some("al1"))), 0);
+            h.on_event(
+                &EngineEvent::TrackStarted(Box::new(song(id, Some("al1")))),
+                0,
+            );
             h.on_event(&playing(0.1), 0);
             h.settle().await;
         }
         // No album id: nothing to look up.
-        h.on_event(&EngineEvent::TrackStarted(song("s3", None)), 0);
+        h.on_event(&EngineEvent::TrackStarted(Box::new(song("s3", None))), 0);
         h.on_event(&playing(0.1), 0);
         h.settle().await;
         let calls = ports.take();
@@ -642,7 +663,10 @@ mod tests {
     #[tokio::test]
     async fn presence_never_contains_server_url() {
         let (mut h, ports) = hub();
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            0,
+        );
         h.on_event(&playing(0.1), 0);
         h.settle().await;
         let ups = updates(&ports.take());
@@ -658,7 +682,10 @@ mod tests {
             ..FakePorts::default()
         };
         let mut h = Hub::new(ports.clone());
-        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0);
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            0,
+        );
         h.on_event(&playing(0.1), 0);
         h.settle().await;
         h.on_event(&EngineEvent::Seeked(10.0), 0);

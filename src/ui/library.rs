@@ -179,6 +179,7 @@ mod tests {
             duration: 0,
             cover_art: None,
             music_brainz_id: None,
+            ..Default::default()
         }]);
         lib
     }

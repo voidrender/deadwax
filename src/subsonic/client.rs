@@ -425,6 +425,16 @@ mod tests {
         assert!(a.songs[1].starred);
         assert_eq!(a.songs[0].bit_rate, Some(900));
         assert_eq!(a.songs[0].suffix.as_deref(), Some("flac"));
+        let s = &a.songs[0];
+        assert_eq!(s.disc_number, Some(1));
+        assert_eq!(s.genre.as_deref(), Some("J-Pop"));
+        assert_eq!(s.play_count, Some(12));
+        assert_eq!(s.size, Some(31_457_280));
+        assert_eq!(s.sampling_rate, Some(96_000));
+        assert_eq!(s.bit_depth, Some(24));
+        assert_eq!(a.songs[1].sampling_rate, None);
+        assert_eq!(a.album.genre.as_deref(), Some("J-Pop"));
+        assert_eq!(a.album.play_count, Some(7));
         assert_eq!(
             a.album.music_brainz_id.as_deref(),
             Some("1b2c3d4e-0000-4000-8000-123456789abc")
