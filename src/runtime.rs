@@ -3,12 +3,35 @@ use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
 use crate::subsonic::SubsonicClient;
 use crate::ui;
 use crossterm::event::{Event, EventStream};
-use futures::StreamExt;
+use futures::{Stream, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::sync::{mpsc, watch};
 use tokio::time::MissedTickBehavior;
+
+/// Set by the panic hook. A panic in a spawned task does not end the
+/// process, so the loop checks this and shuts down instead of drawing into a
+/// terminal the hook already restored.
+static PANICKED: AtomicBool = AtomicBool::new(false);
+
+/// Records that a panic happened. Call it from the panic hook.
+pub fn note_panic() {
+    PANICKED.store(true, Ordering::SeqCst);
+}
+
+#[cfg(test)]
+fn clear_panic() {
+    PANICKED.store(false, Ordering::SeqCst);
+}
+
+fn check_panicked() -> anyhow::Result<()> {
+    if PANICKED.load(Ordering::SeqCst) {
+        anyhow::bail!("a background task panicked");
+    }
+    Ok(())
+}
 
 const TICK: Duration = Duration::from_millis(250);
 /// How long quitting waits for the engine to stop mpv.
@@ -55,29 +78,35 @@ pub async fn run<B: Backend>(
 where
     B::Error: Send + Sync + 'static,
 {
-    let result = event_loop(terminal, app, &mut ctx).await;
+    let result = event_loop(terminal, app, &mut ctx, EventStream::new()).await;
     shutdown_engine(&mut ctx).await;
     result
 }
 
-async fn event_loop<B: Backend>(
+/// The loop behind `run`. Terminal input is a parameter so tests can drive
+/// it without a tty.
+async fn event_loop<B, I>(
     terminal: &mut Terminal<B>,
     mut app: App,
     ctx: &mut Ctx,
+    mut input: I,
 ) -> anyhow::Result<()>
 where
+    B: Backend,
     B::Error: Send + Sync + 'static,
+    I: Stream<Item = std::io::Result<Event>> + Unpin,
 {
-    let mut input = EventStream::new();
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut snapshot_open = true;
     let mut engine_open = true;
 
+    check_panicked()?;
     app.player = ctx.snapshot.borrow_and_update().clone();
     terminal.draw(|f| ui::draw(f, &mut app))?;
 
     while !app.should_quit {
+        check_panicked()?;
         let ev = tokio::select! {
             term = input.next() => match term {
                 Some(Ok(Event::Key(key))) => AppEvent::Key(key),
@@ -106,6 +135,7 @@ where
         for effect in app.handle_event(ev) {
             execute(effect, &mut app, ctx);
         }
+        check_panicked()?;
         terminal.draw(|f| ui::draw(f, &mut app))?;
     }
     Ok(())
@@ -136,5 +166,47 @@ async fn shutdown_engine(ctx: &mut Ctx) {
     .await;
     if drained.is_err() {
         tracing::warn!("player engine did not stop in time");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::backend::TestBackend;
+
+    async fn run_loop_briefly() -> anyhow::Result<()> {
+        let (player, _player_rx) = mpsc::unbounded_channel();
+        let (_snap_tx, snapshot) = watch::channel(PlayerSnapshot::default());
+        let (_events_tx, engine_events) = mpsc::unbounded_channel();
+        let mut ctx = Ctx::new(None, player, snapshot, engine_events);
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let input = futures::stream::pending();
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            event_loop(&mut terminal, App::new(), &mut ctx, input),
+        )
+        .await
+        .expect("loop kept running")
+    }
+
+    /// One test covers both cases because the flag is process-wide.
+    #[tokio::test]
+    async fn loop_stops_with_error_after_a_panic_elsewhere() {
+        note_panic();
+        let before_start = run_loop_briefly().await;
+        clear_panic();
+
+        let later = tokio::spawn(async {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            note_panic();
+        });
+        let while_running = run_loop_briefly().await;
+        later.await.unwrap();
+        clear_panic();
+
+        for result in [before_start, while_running] {
+            let err = result.unwrap_err();
+            assert!(err.to_string().contains("panicked"), "{err:#}");
+        }
     }
 }

@@ -52,11 +52,13 @@ async fn run() -> anyhow::Result<()> {
 }
 
 /// Restores the terminal before the default hook prints the panic, so the
-/// message lands on a usable screen.
+/// message lands on a usable screen. It also flags the runtime, which then
+/// shuts down even when the panic was in a spawned task.
 fn install_panic_hook() {
     let previous = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         restore_terminal();
+        runtime::note_panic();
         previous(info);
     }));
 }
