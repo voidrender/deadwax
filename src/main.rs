@@ -4,10 +4,12 @@ use crossterm::terminal::{
 };
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
+use senritsu::config::Config;
 use senritsu::credentials::{CredentialStore, KeyringBackend};
 use senritsu::player::mpv::{MpvBackend, mpv_available};
 use senritsu::player::{UrlFor, spawn_engine};
 use senritsu::runtime::{self, Ctx, SharedClient};
+use senritsu::ui::art::{self, ProtocolChoice};
 use senritsu::{logging, paths};
 use std::io::{Stdout, stdout};
 use std::process::ExitCode;
@@ -39,7 +41,7 @@ async fn main() -> ExitCode {
 
 async fn run() -> anyhow::Result<()> {
     let (backend, backend_events) = MpvBackend::spawn(100).await?;
-    let (app, client) = runtime::startup(
+    let (mut app, client) = runtime::startup(
         &runtime::config_path(),
         &CredentialStore::new(KeyringBackend, runtime::credentials_path()),
     );
@@ -59,9 +61,28 @@ async fn run() -> anyhow::Result<()> {
 
     install_panic_hook();
     let mut terminal = enter_terminal()?;
+    // The query reads the terminal's replies from stdin, so it runs in raw
+    // mode and before the runtime starts reading events.
+    let choice = protocol_choice();
+    let picker = tokio::task::spawn_blocking(move || art::make_picker(choice)).await;
+    if let Ok(picker) = picker {
+        app.art.set_picker(picker);
+    }
+    // Wipe anything a terminal echoed back from the query.
+    let _ = terminal.clear();
     let result = runtime::run(&mut terminal, app, ctx).await;
     restore_terminal();
     result
+}
+
+/// `SENRITSU_IMAGE_PROTOCOL`, else `image_protocol` from the config.
+fn protocol_choice() -> ProtocolChoice {
+    let config = Config::load(&runtime::config_path())
+        .ok()
+        .flatten()
+        .and_then(|c| c.image_protocol);
+    let env = std::env::var(art::PROTOCOL_ENV).ok();
+    art::parse_protocol(art::protocol_setting(env, config).as_deref())
 }
 
 /// Restores the terminal before the default hook prints the panic, so the

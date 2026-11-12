@@ -1,6 +1,8 @@
+pub mod art;
 pub mod help;
 pub mod library;
 pub mod login;
+pub mod now_playing;
 pub mod playlists;
 pub mod queue;
 pub mod search;
@@ -15,6 +17,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    app.art.begin_frame(app.help || app.popup.is_some());
     match app.screen {
         Screen::Main => draw_main(frame, app),
         Screen::Login => login::draw(frame, frame.area(), &app.login),
@@ -26,6 +29,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     if let Some(popup) = &app.popup {
         draw_popup(frame, area, popup);
     }
+    app.art.end_frame();
 }
 
 fn draw_main(frame: &mut Frame, app: &mut App) {
@@ -51,6 +55,8 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
         search::draw(frame, inner, &app.search);
     } else if !app.now_playing && app.view == View::Queue {
         queue::draw(frame, inner, app);
+    } else if app.now_playing {
+        now_playing::draw(frame, inner, app);
     }
     strip::draw(frame, strip_area, app);
 }
@@ -222,6 +228,36 @@ mod tests {
                 sel: 3,
             }));
             render(&mut app, w, h);
+        }
+    }
+
+    #[test]
+    fn renders_cover_art_in_strip_and_now_playing_at_any_size() {
+        let mut app = playing_app();
+        app.player.items[0].song.cover_art = Some("al-1".into());
+        app.handle_event(crate::app::AppEvent::Snapshot(app.player.clone()));
+        let image = image::RgbImage::from_fn(32, 32, |x, y| {
+            image::Rgb([(x * 8) as u8, 40, (y * 8) as u8])
+        });
+        app.handle_event(crate::app::AppEvent::CoverReady {
+            cover_id: "al-1".into(),
+            image: image.into(),
+        });
+        let text = render(&mut app, 100, 30);
+        assert!(text.contains(['▀', '▄']), "strip art missing:\n{text}");
+        for now_playing in [false, true] {
+            app.now_playing = now_playing;
+            for (w, h) in [
+                (20, 5),
+                (1, 1),
+                (0, 0),
+                (7, 3),
+                (3, 20),
+                (62, 21),
+                (100, 30),
+            ] {
+                render(&mut app, w, h);
+            }
         }
     }
 

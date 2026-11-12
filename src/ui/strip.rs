@@ -1,3 +1,4 @@
+use super::art::Slot;
 use super::theme;
 use super::widgets::format_duration;
 use crate::app::{App, View};
@@ -6,21 +7,21 @@ use crate::player::{PlayerSnapshot, Status};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Paragraph};
+use ratatui::widgets::Paragraph;
 
 /// Rows the strip occupies at the bottom of the screen.
 pub const HEIGHT: u16 = 3;
 /// Columns reserved for cover art.
 pub const ART_WIDTH: u16 = 6;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     let [art, _, info] = Layout::horizontal([
         Constraint::Length(ART_WIDTH),
         Constraint::Length(1),
         Constraint::Min(0),
     ])
     .areas(area);
-    draw_art_placeholder(frame, art);
+    app.art.render(frame, art, Slot::Strip);
 
     let [track, progress, footer] = Layout::vertical([Constraint::Length(1); 3]).areas(info);
     frame.render_widget(Paragraph::new(track_line(&app.player)), track);
@@ -29,15 +30,6 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         progress,
     );
     draw_footer(frame, footer, app);
-}
-
-fn draw_art_placeholder(frame: &mut Frame, area: Rect) {
-    let block = Block::bordered()
-        .border_type(BorderType::Rounded)
-        .border_style(theme::border());
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    frame.render_widget(Paragraph::new("♪").style(theme::dim()).centered(), inner);
 }
 
 fn track_line(snap: &PlayerSnapshot) -> Line<'static> {
@@ -61,7 +53,7 @@ fn track_line(snap: &PlayerSnapshot) -> Line<'static> {
     Line::from(spans)
 }
 
-fn progress_line(snap: &PlayerSnapshot, width: u16) -> Line<'static> {
+pub(super) fn progress_line(snap: &PlayerSnapshot, width: u16) -> Line<'static> {
     let icon = match snap.status {
         Status::Playing => "▶",
         Status::Paused => "⏸",

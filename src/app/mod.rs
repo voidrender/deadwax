@@ -8,6 +8,7 @@ pub mod search;
 use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
 use crate::subsonic::{Album, Artist, Playlist, SearchResults, Song, SubsonicClient};
+use crate::ui::art::{ArtState, ResizeDone};
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use image::DynamicImage;
 use keys::{Action, SEEK_STEP, VOLUME_STEP};
@@ -214,6 +215,8 @@ pub enum AppEvent {
         cover_id: String,
         image: DynamicImage,
     },
+    /// Cover art resized and encoded off the UI thread.
+    ArtResized(ResizeDone),
 }
 
 /// Side effects the runtime carries out for the app. Player commands go
@@ -271,6 +274,8 @@ pub enum Effect {
         id: String,
         song_ids: Vec<String>,
     },
+    /// Fetch (or read from cache) and decode a cover for the current track.
+    LoadCover(String),
 }
 
 impl Effect {
@@ -349,6 +354,7 @@ impl std::fmt::Debug for Effect {
                 .field("id", id)
                 .field("song_ids", song_ids)
                 .finish(),
+            Self::LoadCover(id) => f.debug_tuple("LoadCover").field(id).finish(),
         }
     }
 }
@@ -370,6 +376,8 @@ pub struct App {
     /// Songs with a star toggle in flight, mapped to their value before it.
     pub pending_stars: std::collections::HashMap<String, bool>,
     pub now_playing: bool,
+    /// Cover art for the current track.
+    pub art: ArtState,
     pub help: bool,
     pub popup: Option<Popup>,
     pub status: Option<(String, Instant)>,
@@ -468,7 +476,7 @@ impl App {
             AppEvent::Snapshot(snap) => {
                 self.player = snap;
                 self.queue.sync(&self.player.items);
-                Vec::new()
+                self.sync_cover()
             }
             AppEvent::Engine(ev) => {
                 if let EngineEvent::Error(msg) = ev {
@@ -477,7 +485,32 @@ impl App {
                 Vec::new()
             }
             AppEvent::Api(result) => self.handle_api(result),
-            AppEvent::CoverReady { .. } => Vec::new(),
+            AppEvent::CoverReady { cover_id, image } => {
+                self.art.set_image(cover_id, image);
+                Vec::new()
+            }
+            AppEvent::ArtResized(done) => {
+                self.art.finish_resize(done);
+                Vec::new()
+            }
+        }
+    }
+
+    /// Points the art at the current track's cover, loading it when it
+    /// changed. A track without a cover clears the art.
+    pub(crate) fn sync_cover(&mut self) -> Vec<Effect> {
+        let cover = self
+            .player
+            .current
+            .and_then(|i| self.player.items.get(i))
+            .and_then(|item| item.song.cover_art.clone());
+        match cover {
+            Some(id) if self.art.expect(id.clone()) => vec![Effect::LoadCover(id)],
+            Some(_) => Vec::new(),
+            None => {
+                self.art.clear();
+                Vec::new()
+            }
         }
     }
 
@@ -494,7 +527,11 @@ impl App {
                 self.search = SearchState::default();
                 self.playlists = PlaylistsState::default();
                 self.session += 1;
-                return self.library.start();
+                // A cover load from before the login had no client to use.
+                self.art.clear();
+                let mut effects = self.library.start();
+                effects.extend(self.sync_cover());
+                return effects;
             }
             ApiResult::LoginFailed(msg) => {
                 self.login.busy = false;
@@ -890,6 +927,101 @@ mod tests {
         assert!(app.now_playing);
         press(&mut app, 'z');
         assert!(!app.now_playing);
+    }
+
+    fn track(id: &str, cover: Option<&str>) -> crate::player::queue::QueueItem {
+        crate::player::queue::QueueItem {
+            uid: id.len() as u64,
+            song: Song {
+                id: id.into(),
+                title: id.into(),
+                artist: String::new(),
+                artist_id: None,
+                album: String::new(),
+                album_id: None,
+                track: None,
+                year: None,
+                duration: 100,
+                cover_art: cover.map(Into::into),
+                suffix: None,
+                bit_rate: None,
+                starred: false,
+            },
+        }
+    }
+
+    fn playing(item: crate::player::queue::QueueItem) -> AppEvent {
+        AppEvent::Snapshot(PlayerSnapshot {
+            items: vec![item],
+            current: Some(0),
+            ..Default::default()
+        })
+    }
+
+    fn cover() -> DynamicImage {
+        image::RgbImage::new(8, 8).into()
+    }
+
+    #[test]
+    fn track_change_loads_its_cover_once() {
+        let mut app = App::new();
+        assert_eq!(
+            app.handle_event(playing(track("a", Some("al-1")))),
+            [Effect::LoadCover("al-1".into())]
+        );
+        // Same album art, next track: nothing to reload.
+        assert!(
+            app.handle_event(playing(track("b", Some("al-1"))))
+                .is_empty()
+        );
+        assert_eq!(app.art.cover_id.as_deref(), Some("al-1"));
+    }
+
+    #[test]
+    fn track_without_cover_clears_the_art() {
+        let mut app = App::new();
+        app.handle_event(playing(track("a", Some("al-1"))));
+        app.handle_event(AppEvent::CoverReady {
+            cover_id: "al-1".into(),
+            image: cover(),
+        });
+        assert!(app.art.has_image());
+        assert!(app.handle_event(playing(track("b", None))).is_empty());
+        assert!(!app.art.has_image());
+        assert_eq!(app.art.cover_id, None);
+    }
+
+    #[test]
+    fn stale_cover_is_dropped() {
+        let mut app = App::new();
+        app.handle_event(playing(track("a", Some("al-1"))));
+        app.handle_event(playing(track("b", Some("al-2"))));
+        app.handle_event(AppEvent::CoverReady {
+            cover_id: "al-1".into(),
+            image: cover(),
+        });
+        assert!(!app.art.has_image());
+        assert_eq!(app.art.cover_id.as_deref(), Some("al-2"));
+        app.handle_event(AppEvent::CoverReady {
+            cover_id: "al-2".into(),
+            image: cover(),
+        });
+        assert!(app.art.has_image());
+    }
+
+    #[test]
+    fn f_in_now_playing_stars_the_current_track() {
+        let mut app = App::new();
+        app.handle_event(playing(track("cur", None)));
+        app.now_playing = true;
+        assert_eq!(
+            press(&mut app, 'f'),
+            [Effect::ToggleStar {
+                song_id: "cur".into(),
+                starred: true,
+            }]
+        );
+        assert!(app.player.items[0].song.starred);
     }
 
     #[test]

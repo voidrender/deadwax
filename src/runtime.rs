@@ -2,14 +2,17 @@ use crate::app::login::login_error_message;
 use crate::app::playlists::songs_label;
 use crate::app::search::SEARCH_LIMIT;
 use crate::app::{ApiResult, App, AppEvent, Effect};
+use crate::art::CoverCache;
 use crate::config::Config;
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
 use crate::paths;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
 use crate::subsonic::{Auth, SubsonicClient, SubsonicError};
 use crate::ui;
+use crate::ui::art::ResizeJob;
 use crossterm::event::{Event, EventStream};
 use futures::{Stream, StreamExt};
+use image::DynamicImage;
 use ratatui::Terminal;
 use ratatui::backend::Backend;
 use std::collections::HashSet;
@@ -48,6 +51,8 @@ const TICK: Duration = Duration::from_millis(250);
 const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
 /// How long quitting waits for the engine to stop mpv.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(2);
+/// Pixel size requested for cover art.
+const COVER_SIZE: u32 = 600;
 
 /// The logged-in client, shared with the engine's `url_for`. `None` while
 /// logged out.
@@ -129,12 +134,15 @@ impl Ctx {
 /// the loop fails).
 pub async fn run<B: Backend>(
     terminal: &mut Terminal<B>,
-    app: App,
+    mut app: App,
     mut ctx: Ctx,
 ) -> anyhow::Result<()>
 where
     B::Error: Send + Sync + 'static,
 {
+    let (art_tx, art_rx) = mpsc::unbounded_channel();
+    tokio::spawn(art_resizer(art_rx, ctx.tx.clone()));
+    app.art.set_resizer(art_tx);
     if let Some(rx) = ctx.playlist_rx.take() {
         tokio::spawn(playlist_worker(
             rx,
@@ -171,7 +179,7 @@ where
     for effect in app.on_start() {
         execute(effect, &mut app, ctx);
     }
-    terminal.draw(|f| ui::draw(f, &mut app))?;
+    draw(terminal, &mut app)?;
 
     while !app.should_quit {
         check_panicked()?;
@@ -210,9 +218,53 @@ where
         }
         ctx.session.store(app.session, Ordering::SeqCst);
         check_panicked()?;
-        terminal.draw(|f| ui::draw(f, &mut app))?;
+        draw(terminal, &mut app)?;
     }
     Ok(())
+}
+
+/// Draws a frame. When a sixel or iTerm2 image moved or went away, its
+/// pixels are still on screen, so the terminal is cleared and drawn again.
+fn draw<B>(terminal: &mut Terminal<B>, app: &mut App) -> anyhow::Result<()>
+where
+    B: Backend,
+    B::Error: Send + Sync + 'static,
+{
+    terminal.draw(|f| ui::draw(f, app))?;
+    if app.art.take_needs_clear() {
+        terminal.clear()?;
+        terminal.draw(|f| ui::draw(f, app))?;
+    }
+    Ok(())
+}
+
+/// Runs cover resizes on the blocking pool and hands the results back.
+async fn art_resizer(
+    mut rx: mpsc::UnboundedReceiver<ResizeJob>,
+    tx: mpsc::UnboundedSender<AppEvent>,
+) {
+    while let Some(job) = rx.recv().await {
+        let tx = tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let _ = tx.send(AppEvent::ArtResized(job.run()));
+        });
+    }
+}
+
+/// Gets a cover through the disk cache and decodes it on a blocking thread.
+/// A file that does not decode is removed so the next try fetches it again.
+async fn load_cover(cache: CoverCache, cover_id: &str) -> anyhow::Result<DynamicImage> {
+    let path = cache.get(cover_id, COVER_SIZE).await?;
+    tokio::task::spawn_blocking(move || {
+        let decoded = std::fs::read(&path)
+            .map_err(anyhow::Error::from)
+            .and_then(|bytes| Ok(image::load_from_memory(&bytes)?));
+        if decoded.is_err() {
+            let _ = std::fs::remove_file(&path);
+        }
+        decoded
+    })
+    .await?
 }
 
 /// Carries out one effect. Player commands are sent right away; async work
@@ -342,6 +394,24 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
         }
         Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),
         Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, id, true),
+        Effect::LoadCover(id) => {
+            let Some(client) = current_client(&ctx.client) else {
+                return;
+            };
+            let cache = CoverCache::new(paths::cache_dir().join("art"), client);
+            let tx = ctx.tx.clone();
+            tokio::spawn(async move {
+                match load_cover(cache, &id).await {
+                    Ok(image) => {
+                        let _ = tx.send(AppEvent::CoverReady {
+                            cover_id: id,
+                            image,
+                        });
+                    }
+                    Err(e) => tracing::warn!("cover {id} unavailable: {e:#}"),
+                }
+            });
+        }
     }
 }
 

@@ -405,16 +405,26 @@ impl App {
     /// Effects to run once the app is on screen (loads the library).
     pub fn on_start(&mut self) -> Vec<Effect> {
         if self.screen == Screen::Main {
-            self.library.start()
+            let mut effects = self.library.start();
+            effects.extend(self.sync_cover());
+            effects
         } else {
             Vec::new()
         }
     }
 
-    /// The song the global `f` key acts on. Views extend this.
+    /// The song the global `f` key acts on: the current track in Now
+    /// Playing, otherwise the focused song in the active view.
     pub fn selected_song(&self) -> Option<&Song> {
-        if self.screen != Screen::Main || self.now_playing {
+        if self.screen != Screen::Main {
             return None;
+        }
+        if self.now_playing {
+            return self
+                .player
+                .current
+                .and_then(|i| self.player.items.get(i))
+                .map(|item| &item.song);
         }
         match self.view {
             View::Library => self.library.focused_song(),
