@@ -36,9 +36,11 @@ On Linux, notifications go through the desktop notification service (D-Bus), so 
 
 ## Credentials
 
-After a successful login Senritsu stores a salted token (never your password) in the system keychain under the service name `senritsu`, with the account `username@server_url`.
+After a successful login Senritsu stores your password in the system keychain under the service name `senritsu`, with the account `username@server_url`. The keychain is the only place the password is kept.
 
-If no keychain is available (for example Linux without a Secret Service), it writes the salt and token to `credentials.toml` next to `config.toml`, with mode `0600`. The app shows a status message when it falls back to the file.
+If no keychain is available (for example Linux without a Secret Service), Senritsu does not store the password at all. It writes a salt and the token derived from it to `credentials.toml` next to `config.toml`, with mode `0600`, and shows a status message about the fallback. That token is enough to sign in to your server, so treat the file like a password.
+
+Logging out (`X`) deletes both the keychain entry and `credentials.toml`.
 
 Requests use Subsonic token auth only. Stream URLs carry credentials, so they are never logged or shown.
 
@@ -124,7 +126,7 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 
 | Key | Action |
 |---|---|
-| `n` `i` `D` | New / rename / delete playlist (Playlists, playlist column) |
+| `n` `i` `D` | New / rename / delete playlist (Playlists, either column; rename and delete act on the highlighted playlist) |
 | `d` | Remove the selected track (Playlists track column, Queue) |
 | `J` `K` | Move the selected track down / up (Playlists track column, Queue) |
 | `c` | Clear the queue (asks to confirm) |
