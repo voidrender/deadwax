@@ -52,7 +52,8 @@ The config file is `$XDG_CONFIG_HOME/senritsu/config.toml`, or `~/.config/senrit
 |---|---|---|
 | `server_url` | none (required) | Base URL of your server |
 | `username` | none (required) | Login name |
-| `discord_app_id` | unset | Discord application ID. Discord presence is off when this is empty |
+| `discord` | `true` | Set to `false` to turn off Discord presence |
+| `discord_app_id` | built-in | Discord application ID. Set it to show presence under your own Discord application |
 | `discord_default_image` | `senritsu` | Name of the Discord art asset used when no public cover is found |
 | `image_protocol` | unset (auto) | Album art protocol: `auto`, `kitty`, `iterm2`, `sixel`, or `halfblocks` |
 
@@ -61,17 +62,19 @@ Example:
 ```toml
 server_url = "https://music.example.com"
 username = "alice"
-discord_app_id = "123456789012345678"
-discord_default_image = "senritsu"
 image_protocol = "kitty"
 ```
 
-## Discord setup
+## Discord presence
 
-1. Open the [Discord developer portal](https://discord.com/developers/applications) and create a new application. The application name is what Discord shows after "Listening to", so name it Senritsu or whatever you prefer.
+Discord presence works out of the box. While a track plays, Discord shows "Listening to Senritsu" with the track, artist, album, and cover. The Discord desktop app must be running on the same machine. Set `discord = false` in `config.toml` to turn it off.
+
+To show presence under a different name or default image, use your own Discord application:
+
+1. Open the [Discord developer portal](https://discord.com/developers/applications) and create a new application. Discord shows its name after "Listening to".
 2. Copy the Application ID from the General Information page into `discord_app_id` in `config.toml`.
-3. Under Rich Presence, upload an art asset named `senritsu` (or whatever you set in `discord_default_image`). Senritsu shows it when it cannot find a public cover for the track.
-4. Restart Senritsu. Discord must be running on the same machine.
+3. Under Rich Presence, upload an art asset named `senritsu` (or whatever you set in `discord_default_image`). Senritsu shows it when it cannot find a public cover for the album.
+4. Restart Senritsu.
 
 Discord only ever receives public cover art URLs, found by looking up the album on the Cover Art Archive, iTunes, and Deezer. Your Navidrome server's address, username, and credentials are never sent to Discord or to those lookup services. Lookups use only the artist and album names (or the MusicBrainz release ID when your library has one). Results are cached in `public_art.json`.
 

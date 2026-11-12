@@ -736,6 +736,7 @@ fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> 
         None => Config {
             server_url: server.to_string(),
             username: username.to_string(),
+            discord: true,
             discord_app_id: None,
             discord_default_image: "senritsu".to_string(),
             image_protocol: None,
@@ -913,9 +914,11 @@ impl Services {
 fn start_services(ctx: &mut Ctx) -> Services {
     let config = Config::load(&ctx.config_path).ok().flatten();
     let presence = config.as_ref().and_then(|c| {
-        let app_id = c.discord_app_id.as_deref()?.trim();
-        (!app_id.is_empty())
-            .then(|| discord::spawn_presence(app_id.to_string(), c.discord_default_image.clone()))
+        let app_id = c.presence_app_id()?;
+        Some(discord::spawn_presence(
+            app_id.to_string(),
+            c.discord_default_image.clone(),
+        ))
     });
     let data = paths::data_dir();
     let cache = paths::cache_dir();
@@ -1255,6 +1258,7 @@ mod tests {
         Config {
             server_url: server.into(),
             username: user.into(),
+            discord: true,
             discord_app_id: Some("42".into()),
             discord_default_image: "custom".into(),
             image_protocol: Some("kitty".into()),
