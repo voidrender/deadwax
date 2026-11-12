@@ -219,6 +219,9 @@ impl Conn {
                 "--audio-display=no",
                 "--gapless-audio=weak",
                 "--prefetch-playlist=yes",
+                // User config still loads, but keep-open would pause at the
+                // end of a file instead of ending it.
+                "--keep-open=no",
             ])
             .arg(format!("--input-ipc-server={}", socket.display()))
             .arg(format!("--volume={volume}"))
