@@ -1,3 +1,4 @@
+pub mod app;
 pub mod art;
 pub mod config;
 pub mod credentials;
@@ -5,5 +6,7 @@ pub mod integrations;
 pub mod logging;
 pub mod paths;
 pub mod player;
+pub mod runtime;
 pub mod scrobble;
 pub mod subsonic;
+pub mod ui;
