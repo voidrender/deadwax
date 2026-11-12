@@ -33,8 +33,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
 }
 
 fn draw_main(frame: &mut Frame, app: &mut App) {
+    // Full-screen Now Playing shows everything the strip would, so the
+    // strip makes way for it.
+    let strip_height = if app.now_playing { 0 } else { strip::HEIGHT };
     let [main, strip_area] =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(strip::HEIGHT)])
+        Layout::vertical([Constraint::Min(0), Constraint::Length(strip_height)])
             .areas(frame.area());
     let title = if app.now_playing {
         "Now Playing"
@@ -58,7 +61,9 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
     } else if app.now_playing {
         now_playing::draw(frame, inner, app);
     }
-    strip::draw(frame, strip_area, app);
+    if !app.now_playing {
+        strip::draw(frame, strip_area, app);
+    }
 }
 
 fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
@@ -186,6 +191,20 @@ mod tests {
         let text = render(&mut app, 100, 30);
         assert!(text.contains("Saved"), "{text}");
         assert!(!text.contains("Playlists"), "{text}");
+    }
+
+    #[test]
+    fn now_playing_hides_the_strip_but_keeps_its_information() {
+        let mut app = playing_app();
+        app.now_playing = true;
+        app.set_status("Saved");
+        let text = render(&mut app, 100, 30);
+        assert!(!text.contains("1 Library"), "{text}");
+        for want in ["Roygbiv", "1:12", "vol 80%", "Saved"] {
+            assert!(text.contains(want), "missing {want:?} in\n{text}");
+        }
+        // The pane reaches the bottom row.
+        assert!(text.lines().last().unwrap().contains('╰'), "{text}");
     }
 
     #[test]

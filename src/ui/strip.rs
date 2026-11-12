@@ -148,7 +148,7 @@ fn tabs_line(active: View, now_playing: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-fn modes_line(snap: &PlayerSnapshot) -> Line<'static> {
+pub(super) fn modes_line(snap: &PlayerSnapshot) -> Line<'static> {
     let mut spans = Vec::new();
     if snap.shuffle {
         spans.push(Span::raw("🔀 "));

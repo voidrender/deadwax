@@ -24,7 +24,7 @@ const MARGIN: u16 = 2;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        draw_details(frame, area, &app.player);
+        draw_details(frame, area, app);
         return;
     }
     let font = app.art.picker.font_size();
@@ -36,7 +36,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         width: area.right().saturating_sub(left + 1),
         ..area
     };
-    draw_details(frame, text, &app.player);
+    draw_details(frame, text, app);
 }
 
 /// The largest area, at most `ART_PERCENT` of the width and `MAX_ART_WIDTH`
@@ -58,8 +58,13 @@ fn art_rect(area: Rect, cell_w: u32, cell_h: u32) -> Rect {
     Rect::new(area.x + MARGIN, area.y + (area.height - h) / 2, w, h)
 }
 
-fn draw_details(frame: &mut Frame, area: Rect, snap: &PlayerSnapshot) {
-    let lines = detail_lines(snap, area.width);
+fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
+    let mut lines = detail_lines(&app.player, area.width);
+    // The strip is hidden in this view, so its status message shows here.
+    if let Some(msg) = app.status_text() {
+        lines.push(Line::raw(""));
+        lines.push(Line::styled(msg.to_owned(), theme::accent()));
+    }
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let top = area.height.saturating_sub(height) / 2;
     let rect = Rect {
@@ -131,6 +136,7 @@ fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
     }
     lines.push(Line::raw(""));
     lines.push(strip::progress_line(snap, width));
+    lines.push(strip::modes_line(snap));
     if let Some(next) = next(snap) {
         lines.push(Line::raw(""));
         lines.push(Line::from(vec![
