@@ -511,6 +511,11 @@ impl App {
         self.library.set_starred(song_id, starred);
         self.search.set_starred(song_id, starred);
         self.playlists.set_starred(song_id, starred);
+        for item in &mut self.player.items {
+            if item.song.id == song_id {
+                item.song.starred = starred;
+            }
+        }
     }
 
     fn finish_load(&mut self, what: &str, applied: Result<Vec<Effect>, String>) -> Vec<Effect> {

@@ -1360,6 +1360,20 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_starred_publishes_the_new_flag() {
+        let mut e = playing(2).await;
+        let mut snap = e.snapshot();
+        e.update_snapshot(&mut snap);
+        e.handle_command(PlayerCommand::SetStarred {
+            song_id: "0".into(),
+            starred: true,
+        })
+        .await;
+        assert!(e.update_snapshot(&mut snap));
+        assert!(snap.items[0].song.starred);
+    }
+
+    #[tokio::test]
     async fn spawned_engine_publishes_snapshots() {
         let (tx, rx) = mpsc::unbounded_channel();
         let url_for: UrlFor = Arc::new(|s: &Song| format!("u:{}", s.id));
