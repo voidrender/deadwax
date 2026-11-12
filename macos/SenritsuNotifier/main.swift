@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 import UserNotifications
 
 // Exit codes: 0 posted, 1 other error, 2 not authorized.
@@ -13,17 +14,43 @@ func parseArgs() -> [String: String] {
     return out
 }
 
+func warn(_ message: String) {
+    FileHandle.standardError.write(Data("SenritsuNotifier: \(message)\n".utf8))
+}
+
+/// Cached covers use a `.img` extension, so detect the real type from magic bytes.
+func imageType(of data: Data) -> (ext: String, uti: String)? {
+    let b = [UInt8](data.prefix(12))
+    if b.starts(with: [0xFF, 0xD8, 0xFF]) { return ("jpg", UTType.jpeg.identifier) }
+    if b.starts(with: [0x89, 0x50, 0x4E, 0x47]) { return ("png", UTType.png.identifier) }
+    if b.starts(with: [0x47, 0x49, 0x46, 0x38]) { return ("gif", UTType.gif.identifier) }
+    if b.count >= 12, b.starts(with: [0x52, 0x49, 0x46, 0x46]), Array(b[8..<12]) == [0x57, 0x45, 0x42, 0x50] {
+        return ("webp", UTType.webP.identifier)
+    }
+    return nil
+}
+
 /// UN moves attachment files, so hand it a private copy.
 func attachment(for path: String?) -> UNNotificationAttachment? {
     guard let path = path, !path.isEmpty else { return nil }
     let src = URL(fileURLWithPath: path)
-    let ext = src.pathExtension.isEmpty ? "jpg" : src.pathExtension
-    let copy = URL(fileURLWithPath: NSTemporaryDirectory())
-        .appendingPathComponent("\(UUID().uuidString).\(ext)")
+    var copy: URL?
     do {
-        try FileManager.default.copyItem(at: src, to: copy)
-        return try UNNotificationAttachment(identifier: "cover", url: copy, options: nil)
+        let data = try Data(contentsOf: src)
+        guard let type = imageType(of: data) else {
+            warn("unrecognized image format: \(path)")
+            return nil
+        }
+        let dest = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("\(UUID().uuidString).\(type.ext)")
+        copy = dest
+        try data.write(to: dest)
+        return try UNNotificationAttachment(
+            identifier: "cover", url: dest,
+            options: [UNNotificationAttachmentOptionsTypeHintKey: type.uti])
     } catch {
+        warn("attachment failed: \(error)")
+        if let copy = copy { try? FileManager.default.removeItem(at: copy) }
         return nil
     }
 }
