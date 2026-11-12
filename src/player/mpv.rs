@@ -13,13 +13,16 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::net::UnixStream;
 use tokio::net::unix::OwnedWriteHalf;
 use tokio::process::{Child, Command};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(3);
 const REPLY_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a dead process's reader gets to forward its last events.
 const DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
+/// How long a replacing load waits for the new file to start before it
+/// unpauses anyway.
+const START_TIMEOUT: Duration = Duration::from_secs(5);
 
 const OBSERVED: [&str; 4] = ["time-pos", "pause", "duration", "idle-active"];
 
@@ -64,6 +67,8 @@ pub struct MpvBackend {
 struct Conn {
     writer: OwnedWriteHalf,
     pending: Pending,
+    /// The newest playlist entry mpv has started. Entry ids only grow.
+    started: watch::Receiver<EntryId>,
     /// Set before a deliberate kill. Silences the reader and the crash report.
     shutdown: Arc<AtomicBool>,
     kill: Option<oneshot::Sender<()>>,
@@ -154,7 +159,8 @@ impl AudioBackend for MpvBackend {
         // Pause is set globally rather than as a per-file option: mpv resets
         // per-file options when a file ends, which would carry the load-time
         // pause state into the next gapless track. Pausing goes before the
-        // load and unpausing after it, so the old track never resumes.
+        // load and unpausing after the new file starts, so the old track
+        // never resumes.
         let unpause_after = match mode {
             LoadMode::Replace { paused: true, .. } => {
                 self.command(json!(["set_property", "pause", true])).await?;
@@ -175,12 +181,26 @@ impl AudioBackend for MpvBackend {
             "flags": flag,
             "options": file_options(start, title),
         });
+        // Taken before the load so a quick start-file is not missed.
+        let mut started = self
+            .conn
+            .as_ref()
+            .context("mpv is not running")?
+            .started
+            .clone();
         let data = self.command(args).await?;
         let id = data
             .get("playlist_entry_id")
             .and_then(Value::as_i64)
             .ok_or_else(|| anyhow!("mpv loadfile: reply had no playlist_entry_id"))?;
         if unpause_after {
+            // mpv replies once the entry is queued, but the old file stops a
+            // moment later. Unpausing before the new file starts can resume
+            // the old one for an instant.
+            let new_file = started.wait_for(|last| *last >= id);
+            if tokio::time::timeout(START_TIMEOUT, new_file).await.is_err() {
+                tracing::debug!("mpv: new file did not start in time, unpausing anyway");
+            }
             self.command(json!(["set_property", "pause", false]))
                 .await?;
         }
@@ -291,11 +311,13 @@ impl Conn {
 
         let (reader, writer) = stream.into_split();
         let pending: Pending = Arc::default();
+        let (started_tx, started) = watch::channel(0);
         let shutdown = Arc::new(AtomicBool::new(false));
         let reader = tokio::spawn(read_loop(
             reader,
             pending.clone(),
             events.clone(),
+            started_tx,
             shutdown.clone(),
         ));
         let (kill, kill_rx) = oneshot::channel();
@@ -304,6 +326,7 @@ impl Conn {
         Ok(Conn {
             writer,
             pending,
+            started,
             shutdown,
             kill: Some(kill),
             watcher: Some(watcher),
@@ -400,6 +423,7 @@ async fn read_loop<R: AsyncRead + Unpin>(
     reader: R,
     pending: Pending,
     events: mpsc::UnboundedSender<BackendEvent>,
+    started: watch::Sender<EntryId>,
     shutdown: Arc<AtomicBool>,
 ) {
     let mut reader = BufReader::new(reader);
@@ -424,6 +448,15 @@ async fn read_loop<R: AsyncRead + Unpin>(
                 continue;
             }
             if let Some(ev) = parse_event(&msg, &mut idle) {
+                if let BackendEvent::FileStarted(id) = ev {
+                    started.send_if_modified(|last| {
+                        let newer = id > *last;
+                        if newer {
+                            *last = id;
+                        }
+                        newer
+                    });
+                }
                 let _ = events.send(ev);
             }
         } else if let Some(id) = msg.get("request_id").and_then(Value::as_u64) {
@@ -523,10 +556,12 @@ mod tests {
     async fn reader_survives_bad_lines() {
         let (mut tx_side, rx_side) = tokio::io::duplex(1024);
         let (events, mut rx) = mpsc::unbounded_channel();
+        let (started_tx, started) = watch::channel(0);
         let reader = tokio::spawn(read_loop(
             rx_side,
             Pending::default(),
             events,
+            started_tx,
             Arc::new(AtomicBool::new(false)),
         ));
         tx_side
@@ -539,6 +574,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(ev, Some(BackendEvent::FileStarted(4)));
+        assert_eq!(*started.borrow(), 4);
         assert!(!reader.is_finished());
     }
 
