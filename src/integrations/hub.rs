@@ -2,8 +2,10 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use futures::future::BoxFuture;
+use tokio::task::JoinHandle;
 
 use crate::art::ArtQuery;
 use crate::integrations::discord::{PresenceInfo, PresenceMsg};
@@ -28,46 +30,90 @@ pub trait HubPorts: Send {
 /// A track is announced (now playing, notification, presence) only once it
 /// is actually playing: on the first unpaused position or an unpause. A
 /// restored queue starts its track paused, and that must stay quiet.
+///
+/// The cover and art lookups for an announcement run in their own task, so
+/// the hub keeps reading events. A lookup whose track has since changed or
+/// stopped sends nothing.
 pub struct Hub<P: HubPorts> {
-    ports: P,
+    ports: Arc<P>,
     tracker: ScrobbleTracker,
     current: Option<Song>,
     last_pos: f64,
-    mbids: HashMap<String, Option<String>>,
+    mbids: Arc<Mutex<HashMap<String, Option<String>>>>,
     /// The current track has been announced.
     announced: bool,
-    paused: bool,
-    /// Public art found for the current track, reused on resume and seek.
-    image_url: Option<String>,
+    /// Presence state, shared with the lookup task.
+    shown: Arc<Mutex<Shown>>,
+    lookup: Option<JoinHandle<()>>,
 }
 
-impl<P: HubPorts> Hub<P> {
+/// What Discord should show. Updated under one lock so a lookup can't
+/// send an update after the hub has moved on or cleared the presence.
+#[derive(Default)]
+struct Shown {
+    /// Bumped on every track change and stop.
+    generation: u64,
+    song: Option<Song>,
+    /// Public art found for the song, reused on resume and seek.
+    image_url: Option<String>,
+    position: f64,
+    paused: bool,
+}
+
+impl Shown {
+    fn update(&self) -> Option<PresenceMsg> {
+        let song = self.song.as_ref()?;
+        Some(PresenceMsg::Update(PresenceInfo {
+            title: song.title.clone(),
+            artist: song.artist.clone(),
+            album: song.album.clone(),
+            image_url: self.image_url.clone(),
+            position: self.position,
+            duration: song.duration,
+        }))
+    }
+}
+
+fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl<P: HubPorts + Sync + 'static> Hub<P> {
     pub fn new(ports: P) -> Self {
         Self {
-            ports,
+            ports: Arc::new(ports),
             tracker: ScrobbleTracker::default(),
             current: None,
             last_pos: 0.0,
-            mbids: HashMap::new(),
+            mbids: Arc::default(),
             announced: false,
-            paused: false,
-            image_url: None,
+            shown: Arc::default(),
+            lookup: None,
         }
     }
 
     pub async fn on_event(&mut self, ev: &EngineEvent, now_ms: i64) {
         match ev {
             EngineEvent::TrackStarted(song) => {
+                self.cancel_lookup();
                 self.current = Some(song.clone());
                 self.last_pos = 0.0;
                 self.announced = false;
-                self.image_url = None;
+                let mut shown = lock(&self.shown);
+                shown.generation += 1;
+                shown.song = Some(song.clone());
+                shown.image_url = None;
+                shown.position = 0.0;
             }
             &EngineEvent::Position { pos, paused } => {
                 self.last_pos = pos;
-                self.paused = paused;
+                {
+                    let mut shown = lock(&self.shown);
+                    shown.position = pos;
+                    shown.paused = paused;
+                }
                 if !self.announced && !paused {
-                    self.announce(now_ms).await;
+                    self.announce(now_ms);
                 }
                 if self.announced {
                     for a in self.tracker.position(pos, paused) {
@@ -77,35 +123,57 @@ impl<P: HubPorts> Hub<P> {
             }
             &EngineEvent::Seeked(pos) => {
                 self.last_pos = pos;
-                if self.announced && !self.paused {
-                    self.update_presence();
+                let mut shown = lock(&self.shown);
+                shown.position = pos;
+                if self.announced && !shown.paused {
+                    self.send_update(&shown);
                 }
             }
             EngineEvent::PauseChanged(true) => {
-                self.paused = true;
+                lock(&self.shown).paused = true;
                 self.ports.presence(PresenceMsg::Clear);
             }
             EngineEvent::PauseChanged(false) => {
-                self.paused = false;
-                if self.announced {
-                    self.update_presence();
-                } else {
-                    self.announce(now_ms).await;
+                {
+                    let mut shown = lock(&self.shown);
+                    shown.paused = false;
+                    if self.announced {
+                        self.send_update(&shown);
+                    }
+                }
+                if !self.announced {
+                    self.announce(now_ms);
                 }
             }
             EngineEvent::Stopped => {
+                self.cancel_lookup();
                 self.current = None;
                 self.announced = false;
-                self.image_url = None;
+                let mut shown = lock(&self.shown);
+                shown.generation += 1;
+                shown.song = None;
+                shown.image_url = None;
                 self.ports.presence(PresenceMsg::Clear);
             }
             EngineEvent::Error(_) => {}
         }
     }
 
-    /// Scrobbles now playing, shows the notification, then looks up public
-    /// art and shows the presence.
-    async fn announce(&mut self, now_ms: i64) {
+    fn send_update(&self, shown: &Shown) {
+        if let Some(m) = shown.update() {
+            self.ports.presence(m);
+        }
+    }
+
+    fn cancel_lookup(&mut self) {
+        if let Some(task) = self.lookup.take() {
+            task.abort();
+        }
+    }
+
+    /// Scrobbles now playing right away, then starts the lookups that end
+    /// in the notification and the presence.
+    fn announce(&mut self, now_ms: i64) {
         let Some(song) = self.current.clone() else {
             return;
         };
@@ -113,63 +181,90 @@ impl<P: HubPorts> Hub<P> {
         for a in self.tracker.track_started(&song, now_ms) {
             self.ports.scrobble(a);
         }
+        let generation = lock(&self.shown).generation;
+        self.cancel_lookup();
+        self.lookup = Some(tokio::spawn(lookup(
+            Arc::clone(&self.ports),
+            Arc::clone(&self.shown),
+            Arc::clone(&self.mbids),
+            generation,
+            song,
+        )));
+    }
 
-        let image_path = match &song.cover_art {
-            Some(id) => self.ports.cover_path(id).await,
-            None => None,
-        };
-        self.ports.notify(TrackNotification {
+    /// Waits for the running lookup to finish.
+    #[cfg(test)]
+    async fn settle(&mut self) {
+        if let Some(task) = self.lookup.take() {
+            let _ = task.await;
+        }
+    }
+}
+
+/// Fetches the cover and shows the notification, then finds public art
+/// and shows the presence. Each step is skipped once `generation` is stale.
+async fn lookup<P: HubPorts + Sync>(
+    ports: Arc<P>,
+    shown: Arc<Mutex<Shown>>,
+    mbids: Arc<Mutex<HashMap<String, Option<String>>>>,
+    generation: u64,
+    song: Song,
+) {
+    let image_path = match &song.cover_art {
+        Some(id) => ports.cover_path(id).await,
+        None => None,
+    };
+    {
+        if lock(&shown).generation != generation {
+            return;
+        }
+        ports.notify(TrackNotification {
             title: song.title.clone(),
             artist: song.artist.clone(),
             album: song.album.clone(),
             image_path,
         });
-
-        let release_mbid = match &song.album_id {
-            Some(id) => self.album_mbid(id).await,
-            None => None,
-        };
-        // Only names and the MusicBrainz id go out, never anything that
-        // points at the private server.
-        self.image_url = self
-            .ports
-            .public_art(ArtQuery {
-                artist: song.artist.clone(),
-                album: song.album.clone(),
-                release_mbid,
-            })
-            .await;
-        self.update_presence();
     }
 
-    async fn album_mbid(&mut self, album_id: &str) -> Option<String> {
-        if let Some(known) = self.mbids.get(album_id) {
-            return known.clone();
+    let release_mbid = match &song.album_id {
+        Some(id) => {
+            let known = lock(&mbids).get(id).cloned();
+            match known {
+                Some(m) => m,
+                None => {
+                    let found = ports.album_mbid(id).await;
+                    lock(&mbids).insert(id.clone(), found.clone());
+                    found
+                }
+            }
         }
-        let found = self.ports.album_mbid(album_id).await;
-        self.mbids.insert(album_id.to_string(), found.clone());
-        found
-    }
-
-    fn update_presence(&self) {
-        let Some(song) = &self.current else {
-            return;
-        };
-        self.ports.presence(PresenceMsg::Update(PresenceInfo {
-            title: song.title.clone(),
+        None => None,
+    };
+    // Only names and the MusicBrainz id go out, never anything that points
+    // at the private server.
+    let image_url = ports
+        .public_art(ArtQuery {
             artist: song.artist.clone(),
             album: song.album.clone(),
-            image_url: self.image_url.clone(),
-            position: self.last_pos,
-            duration: song.duration,
-        }));
+            release_mbid,
+        })
+        .await;
+
+    let mut current = lock(&shown);
+    if current.generation != generation {
+        return;
+    }
+    current.image_url = image_url;
+    if !current.paused
+        && let Some(m) = current.update()
+    {
+        ports.presence(m);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::{Arc, Mutex};
 
     const PUBLIC_URL: &str = "https://coverartarchive.org/release/m1/front-500.jpg";
     const SERVER: &str = "music.example";
@@ -187,6 +282,8 @@ mod tests {
     struct FakePorts {
         calls: Arc<Mutex<Vec<Call>>>,
         no_public_art: bool,
+        /// The cover named "slow" waits for this before it is returned.
+        slow_cover: Arc<tokio::sync::Notify>,
     }
 
     impl FakePorts {
@@ -216,7 +313,13 @@ mod tests {
             // The private cache path is named after the server, so a leak
             // into presence would be visible.
             let p = PathBuf::from(format!("/cache/{SERVER}/{cover_id}-600.img"));
-            Box::pin(async move { Some(p) })
+            let gate = (cover_id == "slow").then(|| Arc::clone(&self.slow_cover));
+            Box::pin(async move {
+                if let Some(gate) = gate {
+                    gate.notified().await;
+                }
+                Some(p)
+            })
         }
         fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>> {
             self.record(Call::PublicArt {
@@ -287,6 +390,7 @@ mod tests {
         h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 1000)
             .await;
         h.on_event(&playing(0.2), 1200).await;
+        h.settle().await;
         let calls = ports.take();
 
         assert_eq!(
@@ -333,6 +437,7 @@ mod tests {
         h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
             .await;
         h.on_event(&playing(0.5), 0).await;
+        h.settle().await;
         h.on_event(&playing(30.0), 0).await;
         ports.take();
 
@@ -378,6 +483,8 @@ mod tests {
         assert!(updates(&calls).is_empty(), "{calls:?}");
 
         h.on_event(&EngineEvent::PauseChanged(false), 5000).await;
+
+        h.settle().await;
         let calls = ports.take();
         assert_eq!(
             scrobbles(&calls),
@@ -392,17 +499,66 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_skipped_tracks_lookup_sends_nothing() {
+        let (mut h, ports) = hub();
+        h.on_event(&EngineEvent::TrackStarted(song("s1", Some("slow"))), 0)
+            .await;
+        h.on_event(&playing(0.1), 0).await;
+        // The lookup for s1 starts and waits on its cover.
+        tokio::task::yield_now().await;
+        let stale = lock(&h.shown).generation;
+
+        h.on_event(&EngineEvent::TrackStarted(song("s2", Some("al2"))), 0)
+            .await;
+        h.on_event(&playing(0.1), 0).await;
+        h.settle().await;
+        ports.slow_cover.notify_waiters();
+        for _ in 0..10 {
+            tokio::task::yield_now().await;
+        }
+        // A lookup that was already past its await when s2 started.
+        lookup(
+            Arc::clone(&h.ports),
+            Arc::clone(&h.shown),
+            Arc::clone(&h.mbids),
+            stale,
+            song("s1", Some("al1")),
+        )
+        .await;
+
+        let calls = ports.take();
+        let titles: Vec<_> = notifications(&calls).into_iter().map(|n| n.title).collect();
+        assert_eq!(titles, ["Ts2"], "{calls:?}");
+        let shown: Vec<_> = updates(&calls).into_iter().map(|u| u.title).collect();
+        assert_eq!(shown, ["Ts2"], "{calls:?}");
+        // Now playing for s1 went out as soon as it played.
+        assert_eq!(
+            scrobbles(&calls),
+            [
+                ScrobbleAction::NowPlaying {
+                    song_id: "s1".into()
+                },
+                ScrobbleAction::NowPlaying {
+                    song_id: "s2".into()
+                },
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn mbid_lookup_is_memoized() {
         let (mut h, ports) = hub();
         for id in ["s1", "s2"] {
             h.on_event(&EngineEvent::TrackStarted(song(id, Some("al1"))), 0)
                 .await;
             h.on_event(&playing(0.1), 0).await;
+            h.settle().await;
         }
         // No album id: nothing to look up.
         h.on_event(&EngineEvent::TrackStarted(song("s3", None)), 0)
             .await;
         h.on_event(&playing(0.1), 0).await;
+        h.settle().await;
         let calls = ports.take();
         let lookups: Vec<_> = calls
             .iter()
@@ -428,6 +584,7 @@ mod tests {
         h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
             .await;
         h.on_event(&playing(0.1), 0).await;
+        h.settle().await;
         let ups = updates(&ports.take());
         assert_eq!(ups.len(), 1);
         let url = ups[0].image_url.as_deref().unwrap();
@@ -444,6 +601,7 @@ mod tests {
         h.on_event(&EngineEvent::TrackStarted(song("s1", Some("al1"))), 0)
             .await;
         h.on_event(&playing(0.1), 0).await;
+        h.settle().await;
         h.on_event(&EngineEvent::Seeked(10.0), 0).await;
         let calls = ports.take();
         let ups = updates(&calls);

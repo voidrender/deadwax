@@ -961,7 +961,10 @@ fn start_services(ctx: &mut Ctx) -> Services {
 
 /// Feeds engine events to the hub one at a time, in order. Slow lookups
 /// only hold up the hub, never the UI.
-async fn hub_task<P: HubPorts>(mut hub: Hub<P>, mut rx: mpsc::UnboundedReceiver<EngineEvent>) {
+async fn hub_task<P: HubPorts + Sync + 'static>(
+    mut hub: Hub<P>,
+    mut rx: mpsc::UnboundedReceiver<EngineEvent>,
+) {
     while let Some(ev) = rx.recv().await {
         hub.on_event(&ev, unix_ms()).await;
     }
