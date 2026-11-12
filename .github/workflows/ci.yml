@@ -15,7 +15,6 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
 
 jobs:
   fmt:
@@ -23,9 +22,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt
+      # Installs the toolchain pinned in rust-toolchain.toml.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
       - run: cargo fmt --all --check
 
   test:
@@ -39,10 +37,10 @@ jobs:
       SENRITSU_REQUIRE_MPV: "1"
     steps:
       - uses: actions/checkout@v5
-      - uses: dtolnay/rust-toolchain@stable
+      # Installs the toolchain pinned in rust-toolchain.toml and caches builds.
+      - uses: actions-rust-lang/setup-rust-toolchain@v1
         with:
-          components: clippy
-      - uses: Swatinem/rust-cache@v2
+          rustflags: -D warnings
       - name: Install mpv (Linux)
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends mpv
@@ -62,6 +60,10 @@ jobs:
   msrv:
     name: Minimum Rust version
     runs-on: ubuntu-latest
+    env:
+      # Overrides rust-toolchain.toml, which pins the newer toolchain.
+      RUSTUP_TOOLCHAIN: "1.90"
+      RUSTFLAGS: -D warnings
     steps:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@1.90
