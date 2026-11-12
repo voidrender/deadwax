@@ -5,7 +5,7 @@ use crate::app::{App, View};
 use crate::player::queue::RepeatMode;
 use crate::player::{PlayerSnapshot, Status};
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Margin, Rect};
+use ratatui::layout::{Constraint, Flex, Layout, Margin, Rect};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
@@ -21,6 +21,12 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
     // Inset one column on each side so the strip lines up with the
     // columns inside the main border above it.
     let area = area.inner(Margin::new(1, 0));
+    // On wide terminals the art, bar, and indicators sit together in the
+    // middle instead of hugging the left edge.
+    let content = ART_WIDTH + 1 + MAX_PROGRESS_WIDTH;
+    let [area] = Layout::horizontal([Constraint::Length(content.min(area.width))])
+        .flex(Flex::Center)
+        .areas(area);
     let [art, _, info] = Layout::horizontal([
         Constraint::Length(ART_WIDTH),
         Constraint::Length(1),
@@ -194,7 +200,7 @@ mod tests {
     }
 
     #[test]
-    fn indicators_end_with_the_bar_on_wide_terminals() {
+    fn strip_is_centered_on_wide_terminals() {
         use crate::ui::testing::buffer_text;
         let mut app = App::new();
         app.player = snap();
@@ -202,13 +208,15 @@ mod tests {
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, HEIGHT)).unwrap();
         term.draw(|f| draw(f, f.area(), &mut app)).unwrap();
         let text = buffer_text(term.backend().buffer());
-        let rows: Vec<&str> = text.lines().collect();
-        let end = 1 + usize::from(ART_WIDTH) + 1 + usize::from(MAX_PROGRESS_WIDTH);
-        let bar: Vec<char> = rows[1].chars().collect();
-        let tabs: Vec<char> = rows[2].chars().collect();
-        assert_eq!(bar[end - 1], '0', "{text}");
-        assert_eq!(tabs[end - 1], '%', "{text}");
-        assert!(bar[end..].iter().all(|c| *c == ' '), "{text}");
+        let rows: Vec<Vec<char>> = text.lines().map(|r| r.chars().collect()).collect();
+        let content = usize::from(ART_WIDTH + 1 + MAX_PROGRESS_WIDTH);
+        let start = rows[1].iter().position(|c| *c == '▶').unwrap() - usize::from(ART_WIDTH) - 1;
+        let end = start + content;
+        // The bar and the volume both end at the right of the content.
+        assert_eq!(rows[1][end - 1], '0', "{text}");
+        assert_eq!(rows[2][end - 1], '%', "{text}");
+        // Equal space on both sides, give or take a column.
+        assert!(start.abs_diff(200 - end) <= 1, "{start} {end}\n{text}");
     }
 
     #[test]

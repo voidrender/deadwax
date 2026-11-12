@@ -430,7 +430,7 @@ impl ArtState {
             }
         }
         let size = protocol.size_for(RESIZE, area.as_size());
-        // The strip's cover sits flush left, in line with the panes above.
+        // The strip's cover sits flush left, next to the track text.
         let rect = match slot {
             Slot::Strip => {
                 let row = centered(area, area.width, size.height);
