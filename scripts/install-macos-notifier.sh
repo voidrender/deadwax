@@ -27,16 +27,7 @@ swiftc -O "$src/main.swift" -o "$app/Contents/MacOS/SenritsuNotifier" \
   -framework AppKit -framework UserNotifications
 cp "$src/Info.plist" "$app/Contents/Info.plist"
 
-iconset="$out/AppIcon.iconset"
-rm -rf "$iconset"
-mkdir -p "$iconset"
-swiftc -O "$root/scripts/make-icon.swift" -o "$out/make-icon"
-"$out/make-icon" "$out/icon-1024.png"
-for s in 16 32 128 256 512; do
-  sips -z "$s" "$s" "$out/icon-1024.png" --out "$iconset/icon_${s}x${s}.png" >/dev/null
-  sips -z "$((s * 2))" "$((s * 2))" "$out/icon-1024.png" --out "$iconset/icon_${s}x${s}@2x.png" >/dev/null
-done
-iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
+cp "$src/AppIcon.icns" "$app/Contents/Resources/AppIcon.icns"
 
 codesign --force --deep -s - "$app"
 echo "Built $app"

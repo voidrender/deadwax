@@ -1,0 +1,4 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+<defs><filter id="s" x="-10%" y="-10%" width="120%" height="125%"><feDropShadow dx="0" dy="10" stdDeviation="10" flood-color="#000" flood-opacity="0.3"/></filter></defs>
+<rect x="100" y="100" width="824" height="824" rx="185" fill="#242330" filter="url(#s)"/>
+<g transform="translate(100 100) scale(1.609375)"><polyline points="120,172 204,256 120,340" fill="none" stroke="#D89F4D" stroke-width="46" stroke-linecap="round" stroke-linejoin="round"/><rect x="252" y="228" width="40" height="128" rx="8" fill="#CEC4E1"/><rect x="316" y="148" width="40" height="208" rx="8" fill="#CEC4E1"/><rect x="380" y="268" width="40" height="88" rx="8" fill="#CEC4E1"/></g></svg>
