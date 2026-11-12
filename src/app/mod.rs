@@ -245,6 +245,9 @@ pub enum Effect {
     },
     LoadPlaylists,
     LoadPlaylist(String),
+    /// Read of a playlist whose last edit failed. The worker refuses edits
+    /// to it until this runs, then the read replaces the local copy.
+    ResyncPlaylist(String),
     CreatePlaylist {
         name: String,
         song_ids: Vec<String>,
@@ -327,6 +330,7 @@ impl std::fmt::Debug for Effect {
                 .field("id", id)
                 .field("name", name)
                 .finish(),
+            Self::ResyncPlaylist(id) => f.debug_tuple("ResyncPlaylist").field(id).finish(),
             Self::DeletePlaylist(id) => f.debug_tuple("DeletePlaylist").field(id).finish(),
             Self::AddToPlaylist { id, song_ids } => f
                 .debug_struct("AddToPlaylist")

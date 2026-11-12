@@ -579,6 +579,9 @@ impl App {
                     Err(msg) => {
                         self.set_status(format!("Couldn't update the playlist: {msg}"));
                         self.playlists.mark_refreshing(id.as_deref());
+                        // The worker refuses edits to this playlist until the
+                        // fence, sent in order behind them, is processed.
+                        return id.map(Effect::ResyncPlaylist).into_iter().collect();
                     }
                 }
                 Vec::new()
@@ -1011,7 +1014,8 @@ mod tests {
         let mut app = app_with_playlist();
         press(&mut app, 'd');
         press(&mut app, 'd');
-        api(&mut app, mutated(Err("boom".into()), Some("pl1")));
+        let fence = api(&mut app, mutated(Err("boom".into()), Some("pl1")));
+        assert_eq!(fence, [Effect::ResyncPlaylist("pl1".into())]);
         assert_eq!(app.playlists.tracks, Loadable::Loading);
         assert!(press(&mut app, 'd').is_empty());
         assert_eq!(app.status_text(), Some("Playlist is refreshing"));
@@ -1063,5 +1067,23 @@ mod tests {
         assert_eq!(app.playlists.pending, 0);
         app.show_login("s", "u");
         assert_eq!(app.session, 1);
+    }
+
+    #[test]
+    fn the_fence_read_applies_while_other_edits_are_pending() {
+        let mut app = app_with_playlist();
+        press(&mut app, 'd');
+        press(&mut app, 'd');
+        press(&mut app, 'd');
+        api(&mut app, mutated(Err("boom".into()), Some("pl1")));
+        assert_eq!(app.playlists.pending, 2);
+        api(
+            &mut app,
+            ApiResult::Playlist {
+                id: "pl1".into(),
+                result: Ok(vec![song("a"), song("b")]),
+            },
+        );
+        assert_eq!(track_ids(&app), ids(&["a", "b"]));
     }
 }

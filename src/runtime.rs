@@ -12,7 +12,7 @@ use crossterm::event::{Event, EventStream};
 use futures::{Stream, StreamExt};
 use ratatui::Terminal;
 use ratatui::backend::Backend;
-use std::collections::VecDeque;
+use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -312,6 +312,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
         }
         job @ (Effect::LoadPlaylists
         | Effect::LoadPlaylist(_)
+        | Effect::ResyncPlaylist(_)
         | Effect::CreatePlaylist { .. }
         | Effect::RenamePlaylist { .. }
         | Effect::DeletePlaylist(_)
@@ -390,21 +391,18 @@ impl Job {
 /// Runs playlist reads and mutations one at a time, in the order they were
 /// sent, so a read never overtakes a queued write. Jobs from an earlier
 /// session are dropped.
+///
+/// When a mutation of playlist X fails, X is fenced: every later mutation of
+/// X is skipped, because the app computed it against a copy the server does
+/// not have, until the app's `ResyncPlaylist(X)` job comes through the queue.
 async fn playlist_worker(
     mut rx: mpsc::UnboundedReceiver<Job>,
     client: SharedClient,
     session: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
-    let mut buffered: VecDeque<Job> = VecDeque::new();
-    loop {
-        let job = match buffered.pop_front() {
-            Some(job) => job,
-            None => match rx.recv().await {
-                Some(job) => job,
-                None => return,
-            },
-        };
+    let mut fenced: HashSet<(u64, String)> = HashSet::new();
+    while let Some(job) = rx.recv().await {
         if job.session != session.load(Ordering::SeqCst) {
             continue;
         }
@@ -414,22 +412,35 @@ async fn playlist_worker(
                 inner: Box::new(r),
             }));
         };
+        if let Some(target) = job.target()
+            && fenced.contains(&(job.session, target.to_string()))
+        {
+            let (note, list_changed) = match &job.effect {
+                Effect::AddToPlaylist { .. } => (
+                    "Skipped adding songs to a playlist that is refreshing",
+                    true,
+                ),
+                Effect::RenamePlaylist { .. } => {
+                    ("Skipped renaming a playlist that is refreshing", true)
+                }
+                _ => ("", false),
+            };
+            send(ApiResult::PlaylistMutated {
+                result: Ok(note.to_string()),
+                id: None,
+            });
+            if list_changed && let Some(c) = current_client(&client) {
+                send(ApiResult::Playlists(
+                    c.get_playlists().await.map_err(|e| e.to_string()),
+                ));
+            }
+            continue;
+        }
+        if let Effect::ResyncPlaylist(id) = &job.effect {
+            fenced.remove(&(job.session, id.clone()));
+        }
         run_playlist_job(&job, &client, &send, &mut |failed_id| {
-            // Later jobs for the failed playlist were computed on state the
-            // server does not have, so the ones already queued are skipped.
-            while let Ok(next) = rx.try_recv() {
-                buffered.push_back(next);
-            }
-            let (skipped, kept): (Vec<_>, Vec<_>) = buffered
-                .drain(..)
-                .partition(|j| j.session == job.session && j.target() == Some(failed_id));
-            buffered.extend(kept);
-            for _ in skipped {
-                send(ApiResult::PlaylistMutated {
-                    result: Ok(String::new()),
-                    id: None,
-                });
-            }
+            fenced.insert((job.session, failed_id.to_string()));
         })
         .await;
     }
@@ -457,7 +468,7 @@ async fn run_playlist_job(
     let Some(c) = current_client(client) else {
         match &job.effect {
             Effect::LoadPlaylists => send(ApiResult::Playlists(Err(NOT_LOGGED_IN.to_string()))),
-            Effect::LoadPlaylist(id) => send(ApiResult::Playlist {
+            Effect::LoadPlaylist(id) | Effect::ResyncPlaylist(id) => send(ApiResult::Playlist {
                 id: id.clone(),
                 result: Err(NOT_LOGGED_IN.to_string()),
             }),
@@ -475,7 +486,7 @@ async fn run_playlist_job(
             ));
             return;
         }
-        Effect::LoadPlaylist(id) => {
+        Effect::LoadPlaylist(id) | Effect::ResyncPlaylist(id) => {
             send(ApiResult::Playlist {
                 result: c
                     .get_playlist(&id)
@@ -1134,18 +1145,46 @@ mod tests {
             calls.iter().any(|p| p.contains("playlistId=pl2")),
             "{calls:?}"
         );
-        // The skip reports land before the reload of the failed playlist.
-        let reload = events
-            .iter()
-            .position(|e| matches!(e, ApiResult::PlaylistReloaded { .. }))
-            .unwrap();
-        let last_skip = events
-            .iter()
-            .position(
-                |e| matches!(e, ApiResult::PlaylistMutated { result: Ok(m), .. } if m.is_empty()),
-            )
-            .unwrap();
-        assert!(last_skip < reload);
+    }
+
+    #[tokio::test]
+    async fn edits_stay_fenced_until_the_resync_job() {
+        let server = playlist_server(true).await;
+        let events = run_jobs(
+            shared_for(&server),
+            1,
+            vec![
+                job(1, remove("pl1", 1)),
+                // Sent after the failure but before the app's fence.
+                job(1, remove("pl1", 1)),
+                job(
+                    1,
+                    Effect::AddToPlaylist {
+                        id: "pl1".into(),
+                        song_ids: vec!["n".into()],
+                    },
+                ),
+                job(1, Effect::ResyncPlaylist("pl1".into())),
+                job(1, remove("pl1", 0)),
+            ],
+        )
+        .await;
+        let calls = paths(&server).await;
+        let count = |needle: &str| calls.iter().filter(|p| p.contains(needle)).count();
+        assert_eq!(count("songIndexToRemove=1"), 1, "{calls:?}");
+        assert_eq!(count("songIdToAdd"), 0, "{calls:?}");
+        assert_eq!(count("songIndexToRemove=0"), 1, "{calls:?}");
+        let results = mutated_results(&events);
+        assert_eq!(results.len(), 4, "{results:?}");
+        assert!(results[0].is_err());
+        assert_eq!(results[1], Ok(String::new()));
+        assert!(matches!(&results[2], Ok(m) if m.starts_with("Skipped adding")));
+        assert!(results[3].is_ok());
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, ApiResult::Playlist { result: Ok(_), .. }))
+        );
     }
 
     #[tokio::test]
