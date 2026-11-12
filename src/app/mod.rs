@@ -16,6 +16,8 @@ pub const FILE_CREDENTIALS_NOTICE: &str =
 
 /// How long a status message replaces the view tabs.
 pub const STATUS_TTL: Duration = Duration::from_secs(4);
+/// How long notices the user must not miss stay up.
+pub const LONG_STATUS_TTL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {
@@ -62,6 +64,9 @@ pub enum ApiResult {
         saved_to: SavedTo,
     },
     LoginFailed(String),
+    /// The saved login was removed in the background. `Err` carries a
+    /// user-facing message when something could not be cleaned up.
+    LoggedOut(Result<(), String>),
 }
 
 impl std::fmt::Debug for ApiResult {
@@ -73,6 +78,7 @@ impl std::fmt::Debug for ApiResult {
                 .field("saved_to", saved_to)
                 .finish_non_exhaustive(),
             Self::LoginFailed(msg) => f.debug_tuple("LoginFailed").field(msg).finish(),
+            Self::LoggedOut(r) => f.debug_tuple("LoggedOut").field(r).finish(),
         }
     }
 }
@@ -94,7 +100,7 @@ pub enum AppEvent {
 /// Side effects the runtime carries out for the app. Player commands go
 /// straight to the engine; anything async is spawned and reports back as an
 /// `AppEvent`.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub enum Effect {
     Player(PlayerCommand),
     Login {
@@ -104,6 +110,25 @@ pub enum Effect {
     },
     Logout,
     Quit,
+}
+
+impl std::fmt::Debug for Effect {
+    // Hand-written so the login password can never reach a log line.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Player(cmd) => f.debug_tuple("Player").field(cmd).finish(),
+            Self::Login {
+                server, username, ..
+            } => f
+                .debug_struct("Login")
+                .field("server", server)
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::Logout => f.write_str("Logout"),
+            Self::Quit => f.write_str("Quit"),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -167,6 +192,14 @@ impl App {
         self.status = Some((msg.into(), Instant::now()));
     }
 
+    /// A status that stays up for `LONG_STATUS_TTL` instead of `STATUS_TTL`.
+    /// The timestamp is pushed into the future, so the normal expiry check
+    /// (which saturates at zero) keeps it alive for the extra time.
+    pub fn set_long_status(&mut self, msg: impl Into<String>) {
+        let at = Instant::now() + (LONG_STATUS_TTL - STATUS_TTL);
+        self.status = Some((msg.into(), at));
+    }
+
     /// The status message, if it hasn't expired yet.
     pub fn status_text(&self) -> Option<&str> {
         self.status.as_ref().map(|(m, _)| m.as_str())
@@ -212,12 +245,19 @@ impl App {
                 self.screen = Screen::Main;
                 self.login = LoginState::default();
                 if saved_to == SavedTo::File {
-                    self.set_status(FILE_CREDENTIALS_NOTICE);
+                    self.set_long_status(FILE_CREDENTIALS_NOTICE);
                 }
             }
             ApiResult::LoginFailed(msg) => {
                 self.login.busy = false;
                 self.login.error = Some(msg);
+            }
+            ApiResult::LoggedOut(result) => {
+                if let Err(msg) = result
+                    && self.screen == Screen::Login
+                {
+                    self.login.warning = Some(msg);
+                }
             }
         }
         Vec::new()
@@ -456,6 +496,39 @@ mod tests {
             app.status_text(),
             Some("No system keychain found. Login saved to credentials.toml (owner-only).")
         );
+    }
+
+    #[test]
+    fn effect_debug_redacts_the_password() {
+        let e = Effect::Login {
+            server: "https://m.example".into(),
+            username: "alice".into(),
+            password: "sesame".into(),
+        };
+        let text = format!("{e:?}");
+        assert!(!text.contains("sesame"), "{text}");
+        assert!(text.contains("alice"), "{text}");
+    }
+
+    #[test]
+    fn logged_out_error_lands_on_the_login_screen() {
+        let mut app = App::login_screen("s", "");
+        app.handle_event(AppEvent::Api(ApiResult::LoggedOut(Err("stuck".into()))));
+        assert_eq!(app.login.warning.as_deref(), Some("stuck"));
+        let mut app = App::login_screen("s", "");
+        app.handle_event(AppEvent::Api(ApiResult::LoggedOut(Ok(()))));
+        assert_eq!(app.login.warning, None);
+    }
+
+    #[test]
+    fn long_status_outlives_the_normal_ttl() {
+        let mut app = App::new();
+        app.set_long_status("keep");
+        let later = Instant::now() + STATUS_TTL + Duration::from_secs(1);
+        app.expire_status(later);
+        assert_eq!(app.status_text(), Some("keep"));
+        app.expire_status(Instant::now() + LONG_STATUS_TTL + Duration::from_secs(1));
+        assert_eq!(app.status_text(), None);
     }
 
     #[test]

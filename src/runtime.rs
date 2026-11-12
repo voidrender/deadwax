@@ -268,37 +268,66 @@ fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> 
     config.save(path)
 }
 
-/// Stops playback, forgets the stored login and the client, and returns to
-/// the login screen. The server URL stays in the config for next time.
+/// Stops playback, drops the client, and returns to the login screen right
+/// away. Removing the stored login is keychain I/O, so it runs on a blocking
+/// thread and reports back as `ApiResult::LoggedOut`. The config username is
+/// blanked even if the secret could not be removed, so the next start does not
+/// log back in silently.
 fn logout(app: &mut App, ctx: &Ctx) {
     let _ = ctx.player.send(PlayerCommand::Clear);
-    let config = Config::load(&ctx.config_path).ok().flatten();
     let (server, username) = match current_client(&ctx.client) {
         Some(c) => (c.server_url().to_string(), c.username().to_string()),
-        None => config
-            .as_ref()
-            .map(|c| (c.server_url.clone(), c.username.clone()))
+        None => Config::load(&ctx.config_path)
+            .ok()
+            .flatten()
+            .map(|c| (c.server_url, c.username))
             .unwrap_or_default(),
     };
-    let mut problem = None;
-    if let Err(e) = credential_store(&ctx.credentials_path).clear(&server, &username) {
-        tracing::warn!("clearing credentials failed: {e:#}");
-        problem = Some("Couldn't remove the saved login");
-    }
     set_client(&ctx.client, None);
-    if let Some(c) = config
-        && let Err(e) = (Config {
-            username: String::new(),
-            ..c
-        })
-        .save(&ctx.config_path)
-    {
-        tracing::warn!("updating config failed: {e:#}");
-        problem = Some("Couldn't update the config file");
-    }
     app.show_login(&server, "");
-    if let Some(msg) = problem {
-        app.set_status(msg);
+
+    let tx = ctx.tx.clone();
+    let config_path = ctx.config_path.clone();
+    let credentials_path = ctx.credentials_path.clone();
+    tokio::task::spawn_blocking(move || {
+        let store = credential_store(&credentials_path);
+        let result = logout_blocking(&store, &config_path, &server, &username);
+        let _ = tx.send(AppEvent::Api(ApiResult::LoggedOut(result)));
+    });
+}
+
+fn logout_blocking<S: SecretBackend>(
+    store: &CredentialStore<S>,
+    config_path: &Path,
+    server: &str,
+    username: &str,
+) -> Result<(), String> {
+    let mut problems = Vec::new();
+    if let Err(e) = store.clear(server, username) {
+        tracing::warn!("clearing credentials failed: {e:#}");
+        problems.push("the saved login could not be removed");
+    }
+    match Config::load(config_path) {
+        Ok(Some(c)) => {
+            let blanked = Config {
+                username: String::new(),
+                ..c
+            };
+            if let Err(e) = blanked.save(config_path) {
+                tracing::warn!("updating config failed: {e:#}");
+                problems.push("the config file could not be updated");
+            }
+        }
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!("reading config failed: {e:#}");
+            problems.push("the config file could not be updated");
+        }
+    }
+    if problems.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("Logged out, but {}.", problems.join(" and ")))
     }
 }
 
@@ -309,31 +338,44 @@ pub fn startup<S: SecretBackend>(
     config_path: &Path,
     store: &CredentialStore<S>,
 ) -> (App, Option<SubsonicClient>) {
-    let config = Config::load(config_path).unwrap_or_else(|e| {
-        tracing::warn!("ignoring unreadable config: {e:#}");
-        None
-    });
+    let config = match Config::load(config_path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("unreadable config: {e:#}");
+            let mut app = App::login_screen("", "");
+            app.login.warning = Some(UNREADABLE_CONFIG.to_string());
+            return (app, None);
+        }
+    };
     let Some(config) = config else {
         return (App::login_screen("", ""), None);
     };
+    let mut warning = None;
     if !config.username.is_empty() {
-        let auth = store
-            .load(&config.server_url, &config.username)
-            .unwrap_or_else(|e| {
+        match store.load(&config.server_url, &config.username) {
+            Ok(Some(auth)) => {
+                match SubsonicClient::new(&config.server_url, &config.username, auth) {
+                    Ok(client) => return (App::logged_in(client.server_url()), Some(client)),
+                    Err(e) => {
+                        tracing::warn!("saved login unusable: {e}");
+                        warning = Some(UNUSABLE_LOGIN);
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(e) => {
                 tracing::warn!("loading credentials failed: {e:#}");
-                None
-            });
-        if let Some(auth) = auth
-            && let Ok(client) = SubsonicClient::new(&config.server_url, &config.username, auth)
-        {
-            return (App::logged_in(client.server_url()), Some(client));
+                warning = Some(UNUSABLE_LOGIN);
+            }
         }
     }
-    (
-        App::login_screen(&config.server_url, &config.username),
-        None,
-    )
+    let mut app = App::login_screen(&config.server_url, &config.username);
+    app.login.warning = warning.map(str::to_string);
+    (app, None)
 }
+
+const UNREADABLE_CONFIG: &str = "Couldn't read the config file. Please log in again.";
+const UNUSABLE_LOGIN: &str = "Couldn't read the saved login. Please log in again.";
 
 /// Asks the engine to stop and waits briefly for it to finish, which drops
 /// the mpv backend and kills the process.
@@ -430,6 +472,76 @@ mod tests {
         let (app, _) = startup(&path, &store);
         assert_eq!(app.login.server, "https://m.example");
         assert_eq!(app.login.focus, crate::app::login::LoginField::Username);
+    }
+
+    #[test]
+    fn startup_explains_an_unreadable_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "not = [valid").unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("c.toml"));
+        let (app, client) = startup(&path, &store);
+        assert!(client.is_none());
+        assert_eq!(app.login.warning.as_deref(), Some(UNREADABLE_CONFIG));
+    }
+
+    #[test]
+    fn startup_explains_credential_and_client_failures() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // A corrupt token file makes the credential load fail.
+        let bad = dir.path().join("c.toml");
+        std::fs::write(&bad, "garbage = [").unwrap();
+        config("https://m.example", "alice").save(&path).unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), bad);
+        let (app, _) = startup(&path, &store);
+        assert_eq!(app.login.warning.as_deref(), Some(UNUSABLE_LOGIN));
+
+        // A stored login with an invalid server URL cannot build a client.
+        config("not a url", "alice").save(&path).unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("none.toml"));
+        store.save("not a url", "alice", "pw").unwrap();
+        let (app, client) = startup(&path, &store);
+        assert!(client.is_none());
+        assert_eq!(app.login.warning.as_deref(), Some(UNUSABLE_LOGIN));
+    }
+
+    struct FailingDelete;
+    impl SecretBackend for FailingDelete {
+        fn get(&self, _: &str) -> Result<Option<String>, SecretError> {
+            Ok(None)
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), SecretError> {
+            Ok(())
+        }
+        fn delete(&self, _: &str) -> Result<(), SecretError> {
+            Err(SecretError::Other("denied".into()))
+        }
+    }
+
+    #[test]
+    fn logout_clears_login_and_blanks_config_username() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config("https://m.example", "alice").save(&path).unwrap();
+        let store = CredentialStore::new(MemSecrets::default(), dir.path().join("c.toml"));
+        store.save("https://m.example", "alice", "pw").unwrap();
+        logout_blocking(&store, &path, "https://m.example", "alice").unwrap();
+        assert!(store.load("https://m.example", "alice").unwrap().is_none());
+        let c = Config::load(&path).unwrap().unwrap();
+        assert_eq!(c.username, "");
+        assert_eq!(c.server_url, "https://m.example");
+    }
+
+    #[test]
+    fn logout_reports_a_failed_clear_but_still_blanks_the_username() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        config("https://m.example", "alice").save(&path).unwrap();
+        let store = CredentialStore::new(FailingDelete, dir.path().join("c.toml"));
+        let err = logout_blocking(&store, &path, "https://m.example", "alice").unwrap_err();
+        assert!(err.contains("saved login could not be removed"), "{err}");
+        assert_eq!(Config::load(&path).unwrap().unwrap().username, "");
     }
 
     #[test]
