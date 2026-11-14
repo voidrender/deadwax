@@ -61,6 +61,9 @@ pub enum Status {
 pub struct PlayerSnapshot {
     /// Queue items in display order.
     pub items: Vec<QueueItem>,
+    /// For each display position, the item's place in the unshuffled
+    /// order. Saving needs it so shuffle can be turned off after a restart.
+    pub order: Vec<usize>,
     pub current: Option<usize>,
     pub status: Status,
     pub position: f64,

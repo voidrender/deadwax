@@ -105,6 +105,10 @@ impl<B: AudioBackend> Engine<B> {
                 snap.items = items;
                 changed = true;
             }
+            if snap.order != self.queue.order {
+                snap.order.clone_from(&self.queue.order);
+                changed = true;
+            }
         }
         let scalars = (
             self.queue.current_display_index(),
@@ -1154,6 +1158,17 @@ mod tests {
         assert!(e.snapshot().shuffle);
         let ev = e.handle_backend(BackendEvent::FileStarted(3)).await;
         assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song(&peek)))]);
+    }
+
+    #[tokio::test]
+    async fn snapshots_carry_the_unshuffled_order() {
+        let mut e = playing(4).await;
+        e.handle_command(PlayerCommand::ToggleShuffle).await;
+        let snap = e.snapshot();
+        assert_eq!(snap.order, e.queue.order);
+        let saved = PersistedQueue::from_snapshot(&snap);
+        let ids: Vec<_> = saved.songs.iter().map(|s| s.id.clone()).collect();
+        assert_eq!(ids, ["0", "1", "2", "3"]);
     }
 
     #[tokio::test]

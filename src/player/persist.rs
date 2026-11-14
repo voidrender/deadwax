@@ -49,13 +49,31 @@ impl PersistedQueue {
         }
     }
 
-    /// Builds saved state from what the player last published. The snapshot
-    /// only has display order, so that order is saved as the song order.
-    /// A stopped player is saved at the start of its track.
+    /// Builds saved state from what the player last published. Songs are
+    /// saved in their unshuffled order, with the shuffled order beside them.
+    /// When the snapshot's order does not fit its items, display order
+    /// stands in for both. A stopped player is saved at the start of its
+    /// track.
     pub fn from_snapshot(snap: &PlayerSnapshot) -> PersistedQueue {
+        let len = snap.items.len();
+        let mut slots: Vec<Option<Song>> = vec![None; len];
+        let fits = snap.order.len() == len
+            && snap
+                .order
+                .iter()
+                .zip(&snap.items)
+                .all(|(&at, item)| at < len && slots[at].replace(item.song.clone()).is_none());
+        let (songs, order) = if fits {
+            (slots.into_iter().flatten().collect(), snap.order.clone())
+        } else {
+            (
+                snap.items.iter().map(|i| i.song.clone()).collect(),
+                (0..len).collect(),
+            )
+        };
         PersistedQueue {
-            songs: snap.items.iter().map(|i| i.song.clone()).collect(),
-            order: (0..snap.items.len()).collect(),
+            songs,
+            order,
             current: snap.current,
             position: if snap.status == Status::Stopped {
                 0.0
@@ -187,6 +205,7 @@ mod tests {
             .collect();
         let snap = PlayerSnapshot {
             items,
+            order: Vec::new(),
             current: Some(1),
             status: Status::Paused,
             position: 12.0,
@@ -215,6 +234,39 @@ mod tests {
             ..snap
         };
         assert_eq!(PersistedQueue::from_snapshot(&stopped).position, 0.0);
+    }
+
+    #[test]
+    fn a_shuffled_snapshot_keeps_its_original_order() {
+        let mut q = Queue::with_seed(7);
+        q.replace(
+            ["a", "b", "c", "d", "e"].map(|id| song(id, false)).to_vec(),
+            0,
+        );
+        q.set_shuffle(true);
+        let shuffled: Vec<_> = q
+            .display_items()
+            .iter()
+            .map(|i| i.song.id.clone())
+            .collect();
+        let snap = PlayerSnapshot {
+            items: q.display_items().into_iter().cloned().collect(),
+            order: q.order.clone(),
+            current: Some(0),
+            shuffle: true,
+            ..PlayerSnapshot::default()
+        };
+
+        let mut r = Queue::from_persisted(PersistedQueue::from_snapshot(&snap));
+        let ids = |q: &Queue| -> Vec<String> {
+            q.display_items()
+                .iter()
+                .map(|i| i.song.id.clone())
+                .collect()
+        };
+        assert_eq!(ids(&r), shuffled);
+        r.set_shuffle(false);
+        assert_eq!(ids(&r), ["a", "b", "c", "d", "e"]);
     }
 
     #[test]
