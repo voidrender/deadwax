@@ -14,8 +14,9 @@ use ratatui::Frame;
 use ratatui::layout::{Rect, Size};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 use ratatui_image::picker::cap_parser::QueryStdioOptions;
-use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::picker::{Capability, Picker, ProtocolType};
+use ratatui_image::protocol::kitty::StatefulKitty;
+use ratatui_image::protocol::{StatefulProtocol, StatefulProtocolType};
 use ratatui_image::{FilterType, FontSize, Resize, ResizeEncodeRender};
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -153,6 +154,15 @@ fn guessed_font_picker() -> Picker {
     }
 }
 
+/// A base for this run's kitty image ids. Other programs in the same kitty
+/// window pick their own ids, so it starts from a random-ish number, and
+/// never 0, which kitty treats as "no id".
+fn kitty_base_id() -> u32 {
+    use std::hash::{BuildHasher, RandomState};
+    let n = u32::try_from(RandomState::new().hash_one(std::process::id()) >> 40).unwrap_or(1);
+    n.max(1)
+}
+
 /// Where an image is drawn. Each slot keeps its own encoded protocol.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Slot {
@@ -249,6 +259,8 @@ pub struct ArtState {
     drawn: Vec<(Slot, Rect, u64)>,
     last_drawn: Vec<(Slot, Rect, u64)>,
     needs_clear: bool,
+    /// The first of the three kitty image ids, one per slot.
+    kitty_base: u32,
 }
 
 impl Default for ArtState {
@@ -286,7 +298,36 @@ impl ArtState {
             drawn: Vec::new(),
             last_drawn: Vec::new(),
             needs_clear: false,
+            kitty_base: kitty_base_id(),
         }
+    }
+
+    /// A protocol for `img` in `slot`. ratatui-image gives each new kitty
+    /// image a random id, and kitty keeps every image it was sent until its
+    /// memory quota evicts old ones. A fixed id per slot makes each new cover
+    /// replace the last one instead.
+    fn new_protocol(&self, slot: Slot, img: DynamicImage) -> StatefulProtocol {
+        if self.picker.protocol_type() != ProtocolType::Kitty {
+            return self.picker.new_resize_protocol(img);
+        }
+        let id = self.kitty_base.wrapping_add(match slot {
+            Slot::Strip => 0,
+            Slot::Large => 1,
+            Slot::Info => 2,
+        });
+        let compress = self
+            .picker
+            .capabilities()
+            .contains(&Capability::KittyCompression);
+        let kitty = StatefulKitty::new(id, self.picker.tmux_detected(), compress);
+        // Deadwax never sets a picker background color, so None matches what
+        // `new_resize_protocol` would use.
+        StatefulProtocol::new(
+            img,
+            self.picker.font_size(),
+            None,
+            StatefulProtocolType::Kitty(kitty),
+        )
     }
 
     /// Swaps the picker. Any image is dropped, since it was encoded for the
@@ -326,7 +367,7 @@ impl ArtState {
         self.info_cover_id = Some(cover_id);
         match reuse {
             Some(img) => {
-                self.info.protocol = Some(self.picker.new_resize_protocol(img));
+                self.info.protocol = Some(self.new_protocol(Slot::Info, img));
                 false
             }
             None => true,
@@ -369,14 +410,14 @@ impl ArtState {
     /// already shown changes nothing.
     pub fn set_image(&mut self, cover_id: &str, img: DynamicImage) {
         if self.info_cover_id.as_deref() == Some(cover_id) && !self.info.has_image() {
-            self.info.protocol = Some(self.picker.new_resize_protocol(img.clone()));
+            self.info.protocol = Some(self.new_protocol(Slot::Info, img.clone()));
         }
         if self.cover_id.as_deref() != Some(cover_id) || self.has_image() {
             return;
         }
         self.drop_image();
-        self.strip.protocol = Some(self.picker.new_resize_protocol(img.clone()));
-        self.large.protocol = Some(self.picker.new_resize_protocol(img.clone()));
+        self.strip.protocol = Some(self.new_protocol(Slot::Strip, img.clone()));
+        self.large.protocol = Some(self.new_protocol(Slot::Large, img.clone()));
         self.image = Some(img);
     }
 
@@ -544,6 +585,8 @@ mod tests {
     use crate::ui::testing::buffer_text;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
+    use std::collections::HashSet;
 
     #[test]
     fn protocol_env_overrides_config() {
@@ -648,6 +691,42 @@ mod tests {
         })
         .unwrap();
         assert!(buffer_text(term.backend().buffer()).contains('♪'));
+    }
+
+    /// The kitty image ids a frame placed, read from the placeholder cells,
+    /// which carry the id in their foreground color.
+    fn kitty_ids(art: &mut ArtState, slot: Slot) -> HashSet<Color> {
+        let mut term = Terminal::new(TestBackend::new(12, 6)).unwrap();
+        term.draw(|f| {
+            art.begin_frame(false);
+            art.render(f, f.area(), slot);
+            art.end_frame();
+        })
+        .unwrap();
+        term.backend()
+            .buffer()
+            .content()
+            .iter()
+            .filter(|c| c.symbol().starts_with('\u{10EEEE}'))
+            .map(|c| c.fg)
+            .collect()
+    }
+
+    #[test]
+    fn a_new_kitty_cover_reuses_the_slot_id() {
+        let mut picker = halfblocks();
+        picker.set_protocol_type(ProtocolType::Kitty);
+        let mut art = ArtState::new(picker);
+        art.expect("a".into());
+        art.set_image("a", image());
+        let first = kitty_ids(&mut art, Slot::Large);
+        assert_eq!(first.len(), 1, "{first:?}");
+
+        art.expect("b".into());
+        art.set_image("b", image());
+        assert_eq!(kitty_ids(&mut art, Slot::Large), first);
+        // Slots shown at the same time keep apart.
+        assert_ne!(kitty_ids(&mut art, Slot::Strip), first);
     }
 
     #[test]
