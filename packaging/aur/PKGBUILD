@@ -11,7 +11,7 @@ makedepends=('cargo')
 optdepends=('gnome-keyring: store the password in the Secret Service keychain'
             'kwallet: store the password in the Secret Service keychain')
 source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# Replace with the output of: updpkgsums
+# The release workflow fills in pkgver and sha256sums (scripts/release/render-pkgbuild.sh).
 sha256sums=('SKIP')
 
 prepare() {

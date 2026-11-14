@@ -1,0 +1,173 @@
+name: Release
+
+# Pushing a tag such as v0.2.0 runs CI, creates the GitHub release, and
+# publishes the new version to the Homebrew tap and the AUR. The tag must
+# match the version in Cargo.toml. See packaging/README.md for the one-time
+# setup (the tap repository, the AUR key, and the two secrets).
+
+on:
+  push:
+    tags: ["v*.*.*"]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  version:
+    name: Check the version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: check
+        run: echo "version=$(scripts/release/check-version.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+
+  ci:
+    name: CI
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  release:
+    name: GitHub release
+    needs: [version, ci]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      sha256: ${{ steps.sha.outputs.sha256 }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5
+      # A rerun finds the release already there and keeps it.
+      - name: Create the release
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists."
+          else
+            gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+              --title "Deadwax $VERSION"
+          fi
+      # Homebrew and the AUR both build from GitHub's source tarball.
+      - id: sha
+        name: Checksum the source tarball
+        run: |
+          url="https://github.com/$GITHUB_REPOSITORY/archive/refs/tags/$GITHUB_REF_NAME.tar.gz"
+          sha="$(curl -fsSL --retry 3 "$url" | sha256sum | cut -d' ' -f1)"
+          echo "sha256=$sha" >> "$GITHUB_OUTPUT"
+          echo "Source tarball sha256: $sha"
+
+  homebrew:
+    name: Update the Homebrew tap
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA256: ${{ needs.release.outputs.sha256 }}
+      TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Check for the tap token
+        id: token
+        run: |
+          if [[ -z "$TAP_TOKEN" ]]; then
+            echo "::warning::HOMEBREW_TAP_TOKEN is not set, so the tap was not updated."
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.token.outputs.ok == 'true'
+        uses: actions/checkout@v5
+      - if: steps.token.outputs.ok == 'true'
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ github.repository_owner }}/homebrew-tap
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          path: tap
+      - if: steps.token.outputs.ok == 'true'
+        name: Commit the formula
+        run: |
+          mkdir -p tap/Formula
+          scripts/release/render-formula.sh "$VERSION" "$SHA256" > tap/Formula/deadwax.rb
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/deadwax.rb
+          if git diff --cached --quiet; then
+            echo "The formula is already up to date."
+          else
+            git commit -m "deadwax $VERSION"
+            git push
+          fi
+
+  homebrew-check:
+    name: Install from the tap (macOS)
+    needs: homebrew
+    runs-on: macos-latest
+    steps:
+      - name: Install, test and audit
+        run: |
+          brew tap "${GITHUB_REPOSITORY_OWNER}/tap"
+          brew install --build-from-source "${GITHUB_REPOSITORY_OWNER}/tap/deadwax"
+          brew test deadwax
+          brew audit --strict deadwax
+
+  aur:
+    name: Publish to the AUR
+    needs: [version, release]
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA256: ${{ needs.release.outputs.sha256 }}
+      AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+    steps:
+      - name: Install git and ssh
+        run: pacman -Syu --noconfirm --needed git openssh
+      - uses: actions/checkout@v5
+      - name: Render the PKGBUILD
+        run: |
+          mkdir -p /tmp/pkg
+          scripts/release/render-pkgbuild.sh "$VERSION" "$SHA256" > /tmp/pkg/PKGBUILD
+      # makepkg refuses to run as root, so a build user does it. Building
+      # here also runs the PKGBUILD's check(), so a broken package never
+      # reaches the AUR.
+      - name: Build the package
+        run: |
+          useradd -m builder
+          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
+          chown -R builder /tmp/pkg
+          cd /tmp/pkg
+          sudo -u builder makepkg --syncdeps --noconfirm --cleanbuild
+          sudo -u builder sh -c 'makepkg --printsrcinfo > .SRCINFO'
+      - name: Push to the AUR
+        run: |
+          if [[ -z "$AUR_KEY" ]]; then
+            echo "::warning::AUR_SSH_PRIVATE_KEY is not set, so the AUR was not updated."
+            exit 0
+          fi
+          install -dm700 ~/.ssh
+          printf '%s\n' "$AUR_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          # The AUR's published ED25519 host key, pinned rather than trusted
+          # on first use.
+          echo "aur.archlinux.org ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEuBKrPzbawxA/k2g6NcyV5jmqwJ2s+zpgZGZ7tpLIcN" \
+            > ~/.ssh/known_hosts
+          export GIT_SSH_COMMAND="ssh -i $HOME/.ssh/aur -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes"
+          git clone ssh://aur@aur.archlinux.org/deadwax.git /tmp/aur
+          cp /tmp/pkg/PKGBUILD /tmp/pkg/.SRCINFO /tmp/aur/
+          cd /tmp/aur
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "The AUR package is already up to date."
+          else
+            git commit -m "Update to $VERSION"
+            git push origin HEAD:master
+          fi

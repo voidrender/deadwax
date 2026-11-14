@@ -1,22 +1,71 @@
 # Packaging
 
-These files are templates for the Homebrew tap and the AUR package. Both build from the source tarball of a tagged GitHub release.
+These files are templates for the Homebrew tap and the AUR package. Both build from the source tarball of a tagged GitHub release. The release workflow (`.github/workflows/release.yml`) fills in the version and checksum and publishes both.
 
 ## Releasing a version
 
-1. Set `version` in `Cargo.toml`, run `cargo check` so `Cargo.lock` picks it up, and commit.
-2. Tag the commit `vX.Y.Z` and push the tag.
-3. Get the checksum of the release tarball:
+1. Set `version` in `Cargo.toml`, run `cargo check` so `Cargo.lock` picks it up, and commit to `main`.
+2. Tag the commit and push the tag:
 
    ```sh
-   curl -sL https://github.com/voidrender/deadwax/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+   git tag v0.2.0
+   git push origin v0.2.0
    ```
 
-4. Update the Homebrew formula and the PKGBUILD as described below.
+The tag starts the release workflow, which:
 
-## Homebrew
+1. Stops if the tag doesn't match the version in `Cargo.toml`.
+2. Runs CI on the tagged commit.
+3. Creates the GitHub release with generated notes.
+4. Commits the formula to the tap, then installs, tests and audits it on macOS.
+5. Builds the AUR package in an Arch Linux container, running its tests, then pushes `PKGBUILD` and `.SRCINFO` to the AUR.
 
-The formula lives in the `voidrender/homebrew-tap` repository at `Formula/deadwax.rb`. Copy `homebrew/deadwax.rb` there, then set `url` to the new tag and `sha256` to the checksum. Test it with:
+Rerunning a failed job is safe. An existing release is kept, and a formula or PKGBUILD that hasn't changed isn't committed again.
+
+## One-time setup
+
+The workflow needs two secrets in the `deadwax` repository. Without one of them, its job logs a warning and skips publishing.
+
+### Homebrew tap
+
+1. Create a public repository named `homebrew-tap` under the same owner as `deadwax`. It can start empty.
+2. Create a fine-grained personal access token with access to that repository only, and the "Contents: Read and write" permission.
+3. Save it as the `HOMEBREW_TAP_TOKEN` secret:
+
+   ```sh
+   gh secret set HOMEBREW_TAP_TOKEN
+   ```
+
+### AUR
+
+1. Sign in to the AUR, or create an account.
+2. Create an SSH key just for releases, without a passphrase, since the workflow can't type one:
+
+   ```sh
+   ssh-keygen -t ed25519 -N "" -C "deadwax releases" -f ~/.ssh/aur-deadwax
+   ```
+
+3. Add `~/.ssh/aur-deadwax.pub` under My Account → SSH Public Key on the AUR.
+4. Save the private key as the `AUR_SSH_PRIVATE_KEY` secret:
+
+   ```sh
+   gh secret set AUR_SSH_PRIVATE_KEY < ~/.ssh/aur-deadwax
+   ```
+
+The first push creates the `deadwax` package on the AUR.
+
+## By hand
+
+The workflow's render steps are scripts you can run yourself:
+
+```sh
+sha=$(curl -sL https://github.com/voidrender/deadwax/archive/refs/tags/v0.2.0.tar.gz | shasum -a 256 | cut -d' ' -f1)
+scripts/release/render-formula.sh 0.2.0 "$sha" > Formula/deadwax.rb   # in a clone of the tap
+scripts/release/render-pkgbuild.sh 0.2.0 "$sha" > PKGBUILD            # in a clone of the AUR repo
+makepkg --printsrcinfo > .SRCINFO
+```
+
+Test the formula with:
 
 ```sh
 brew install --build-from-source voidrender/tap/deadwax
@@ -25,15 +74,3 @@ brew audit --strict deadwax
 ```
 
 On macOS the formula also builds `DeadwaxNotifier.app` with `scripts/install-macos-notifier.sh --build-only` and installs it to the formula's `libexec`. Deadwax looks for it there.
-
-## AUR
-
-Copy `aur/PKGBUILD` into a clone of the AUR package repository, set `pkgver`, reset `pkgrel` to 1, and run:
-
-```sh
-updpkgsums
-makepkg --printsrcinfo > .SRCINFO
-makepkg -si
-```
-
-Commit `PKGBUILD` and `.SRCINFO` and push to the AUR.
