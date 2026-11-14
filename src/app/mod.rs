@@ -394,6 +394,9 @@ pub struct App {
     /// The queue item whose cover failed to load, so progress snapshots for
     /// that same track do not refetch it. The next track retries.
     cover_failed_on: Option<u64>,
+    /// A random-songs request is out and nothing has changed the queue
+    /// since. Its result only replaces the queue while this holds.
+    random_pending: bool,
     pub help: bool,
     pub popup: Option<Popup>,
     pub status: Option<(String, Instant)>,
@@ -518,7 +521,38 @@ impl App {
     pub fn handle_event(&mut self, ev: AppEvent) -> Vec<Effect> {
         let effects = self.dispatch(ev);
         self.note_playlist_effects(&effects);
+        self.note_random(&effects);
         effects
+    }
+
+    /// Tracks whether a random-songs result may still replace the queue. A
+    /// slow reply must not undo something the user queued after pressing R.
+    fn note_random(&mut self, effects: &[Effect]) {
+        for effect in effects {
+            match effect {
+                Effect::PlayRandom(_) => self.random_pending = true,
+                Effect::Logout
+                | Effect::AppendAlbum(_)
+                | Effect::PlayNextAlbum(_)
+                | Effect::Player(
+                    PlayerCommand::PlayQueue { .. }
+                    | PlayerCommand::Append(_)
+                    | PlayerCommand::PlayNext(_)
+                    | PlayerCommand::JumpTo(_)
+                    | PlayerCommand::Remove(_)
+                    | PlayerCommand::Move { .. }
+                    | PlayerCommand::Clear
+                    | PlayerCommand::Restore(_),
+                ) => self.random_pending = false,
+                _ => {}
+            }
+        }
+    }
+
+    /// Takes the pending random request, if any. Its result is dropped when
+    /// this returns false.
+    pub(super) fn take_random_pending(&mut self) -> bool {
+        std::mem::take(&mut self.random_pending)
     }
 
     fn dispatch(&mut self, ev: AppEvent) -> Vec<Effect> {

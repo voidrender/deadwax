@@ -554,6 +554,8 @@ impl App {
                     }
                 }
             }
+            // The queue changed after R, so the result would undo that.
+            ApiResult::Random(_) if !self.take_random_pending() => Vec::new(),
             ApiResult::Random(r) => match r {
                 Ok(songs) if songs.is_empty() => {
                     self.set_status("The server returned no songs");
@@ -950,6 +952,26 @@ mod tests {
                 songs: vec![song("x")],
                 start: 0
             })]
+        );
+    }
+
+    #[test]
+    fn a_random_result_after_a_queue_change_is_dropped() {
+        let mut app = App::logged_in("s");
+        press(&mut app, 'R');
+        // The user plays something else while the request is out.
+        app.handle_event(AppEvent::Api(ApiResult::AlbumQueued {
+            next: false,
+            result: Ok(vec![song("a")]),
+        }));
+        assert!(api(&mut app, ApiResult::Random(Ok(vec![song("x")]))).is_empty());
+
+        // A result with no request out is dropped too, and a fresh R works.
+        assert!(api(&mut app, ApiResult::Random(Ok(vec![song("x")]))).is_empty());
+        press(&mut app, 'R');
+        assert_eq!(
+            api(&mut app, ApiResult::Random(Ok(vec![song("x")]))).len(),
+            1
         );
     }
 
