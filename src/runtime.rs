@@ -179,25 +179,60 @@ where
     app.set_sorts(Sorts::load(&sorts_path));
     ctx.sorts_path = Some(sorts_path);
     let services = start_services(&mut ctx);
-    let result = event_loop(terminal, app, &mut ctx, EventStream::new()).await;
+    let result = event_loop(
+        terminal,
+        app,
+        &mut ctx,
+        EventStream::new(),
+        termination_signal(),
+    )
+    .await;
     shutdown_engine(&mut ctx).await;
     services.stop().await;
     result
 }
 
-/// The loop behind `run`. Terminal input is a parameter so tests can drive
-/// it without a tty.
-async fn event_loop<B, I>(
+/// Resolves when the process is asked to stop with SIGTERM, SIGHUP or
+/// SIGINT. Handling these lets `run` stop mpv and save the queue, which the
+/// default action (exit on the spot) would skip, leaving mpv playing.
+async fn termination_signal() {
+    use tokio::signal::unix::{SignalKind, signal};
+    let kinds = [
+        SignalKind::terminate(),
+        SignalKind::hangup(),
+        SignalKind::interrupt(),
+    ];
+    let mut streams = Vec::new();
+    for kind in kinds {
+        match signal(kind) {
+            Ok(s) => streams.push(s),
+            Err(e) => tracing::warn!("can't listen for {kind:?}: {e}"),
+        }
+    }
+    if streams.is_empty() {
+        return std::future::pending().await;
+    }
+    let waits = streams.iter_mut().map(|s| Box::pin(s.recv()));
+    futures::future::select_all(waits).await;
+    tracing::info!("stop signal received, shutting down");
+}
+
+/// The loop behind `run`. Terminal input and the stop signal are parameters
+/// so tests can drive it without a tty.
+async fn event_loop<B, I, Q>(
     terminal: &mut Terminal<B>,
     mut app: App,
     ctx: &mut Ctx,
     mut input: I,
+    quit: Q,
 ) -> anyhow::Result<()>
 where
     B: Backend,
     B::Error: Send + Sync + 'static,
     I: Stream<Item = std::io::Result<Event>> + Unpin,
+    Q: Future<Output = ()>,
 {
+    let mut quit = std::pin::pin!(quit);
     let mut tick = tokio::time::interval(TICK);
     tick.set_missed_tick_behavior(MissedTickBehavior::Skip);
     let mut snapshot_open = true;
@@ -223,6 +258,7 @@ where
                 Some(Err(e)) => return Err(e.into()),
                 None => break,
             },
+            () = &mut quit => break,
             _ = tick.tick() => AppEvent::Tick,
             Some(ev) = ctx.rx.recv() => ev,
             changed = ctx.snapshot.changed(), if snapshot_open => if let Ok(()) = changed { AppEvent::Snapshot(ctx.snapshot.borrow_and_update().clone()) } else {
@@ -1677,6 +1713,10 @@ mod tests {
     }
 
     async fn run_loop_briefly() -> anyhow::Result<()> {
+        run_loop_until(std::future::pending()).await
+    }
+
+    async fn run_loop_until(quit: impl Future<Output = ()>) -> anyhow::Result<()> {
         let (player, _player_rx) = mpsc::unbounded_channel();
         let (_snap_tx, snapshot) = watch::channel(PlayerSnapshot::default());
         let (_events_tx, engine_events) = mpsc::unbounded_channel();
@@ -1685,7 +1725,7 @@ mod tests {
         let input = futures::stream::pending();
         tokio::time::timeout(
             Duration::from_secs(1),
-            event_loop(&mut terminal, App::new(), &mut ctx, input),
+            event_loop(&mut terminal, App::new(), &mut ctx, input, quit),
         )
         .await
         .expect("loop kept running")
@@ -1888,9 +1928,10 @@ mod tests {
         assert_eq!(Outbox::open(outbox_path).unwrap().len(), 1);
     }
 
-    /// One test covers both cases because the flag is process-wide.
+    /// One test covers every case because the panic flag is process-wide,
+    /// and a loop running in another test would see it.
     #[tokio::test]
-    async fn loop_stops_with_error_after_a_panic_elsewhere() {
+    async fn loop_stops_after_a_panic_elsewhere_or_a_stop_signal() {
         note_panic();
         let before_start = run_loop_briefly().await;
         clear_panic();
@@ -1907,5 +1948,8 @@ mod tests {
             let err = result.unwrap_err();
             assert!(err.to_string().contains("panicked"), "{err:#}");
         }
+
+        // A stop signal ends the loop cleanly so `run` can shut mpv down.
+        run_loop_until(async {}).await.unwrap();
     }
 }
