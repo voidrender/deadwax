@@ -789,12 +789,8 @@ impl App {
             Action::Prev => PlayerCommand::Prev,
             Action::SeekForward => PlayerCommand::SeekRelative(SEEK_STEP),
             Action::SeekBack => PlayerCommand::SeekRelative(-SEEK_STEP),
-            Action::VolumeUp => {
-                PlayerCommand::SetVolume(self.player.volume.saturating_add(VOLUME_STEP).min(100))
-            }
-            Action::VolumeDown => {
-                PlayerCommand::SetVolume(self.player.volume.saturating_sub(VOLUME_STEP))
-            }
+            Action::VolumeUp => PlayerCommand::ChangeVolume(i16::from(VOLUME_STEP)),
+            Action::VolumeDown => PlayerCommand::ChangeVolume(-i16::from(VOLUME_STEP)),
             Action::ToggleShuffle => PlayerCommand::ToggleShuffle,
             Action::CycleRepeat => PlayerCommand::CycleRepeat,
         };
@@ -1009,26 +1005,15 @@ mod tests {
     }
 
     #[test]
-    fn volume_keys_step_and_clamp() {
+    fn volume_keys_send_steps() {
         let mut app = App::new();
-        app.player.volume = 50;
         assert_eq!(
             press(&mut app, '='),
-            [Effect::Player(PlayerCommand::SetVolume(55))]
+            [Effect::Player(PlayerCommand::ChangeVolume(5))]
         );
         assert_eq!(
             press(&mut app, '-'),
-            [Effect::Player(PlayerCommand::SetVolume(45))]
-        );
-        app.player.volume = 98;
-        assert_eq!(
-            press(&mut app, '='),
-            [Effect::Player(PlayerCommand::SetVolume(100))]
-        );
-        app.player.volume = 3;
-        assert_eq!(
-            press(&mut app, '-'),
-            [Effect::Player(PlayerCommand::SetVolume(0))]
+            [Effect::Player(PlayerCommand::ChangeVolume(-5))]
         );
     }
 

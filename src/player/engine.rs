@@ -177,7 +177,11 @@ impl<B: AudioBackend> Engine<B> {
                 }
             }
             PlayerCommand::SeekTo(secs) => self.seek(secs.max(0.0), &mut ev).await,
-            PlayerCommand::SetVolume(vol) => self.set_volume(vol, &mut ev).await,
+            PlayerCommand::ChangeVolume(delta) => {
+                let vol = (i16::from(self.volume) + delta).clamp(0, 100);
+                self.set_volume(u8::try_from(vol).unwrap_or(100), &mut ev)
+                    .await;
+            }
             PlayerCommand::ToggleShuffle => {
                 self.queue.set_shuffle(!self.queue.shuffle);
                 self.sync_next().await;
@@ -1150,6 +1154,29 @@ mod tests {
         assert!(e.snapshot().shuffle);
         let ev = e.handle_backend(BackendEvent::FileStarted(3)).await;
         assert_eq!(ev, [EngineEvent::TrackStarted(Box::new(song(&peek)))]);
+    }
+
+    #[tokio::test]
+    async fn volume_steps_add_up_and_clamp() {
+        let mut e = engine();
+        e.volume = 50;
+        // Two presses before any snapshot reaches the UI.
+        e.handle_command(PlayerCommand::ChangeVolume(5)).await;
+        e.handle_command(PlayerCommand::ChangeVolume(5)).await;
+        assert_eq!(e.snapshot().volume, 60);
+        e.handle_command(PlayerCommand::ChangeVolume(50)).await;
+        assert_eq!(e.snapshot().volume, 100);
+        e.handle_command(PlayerCommand::ChangeVolume(-120)).await;
+        assert_eq!(e.snapshot().volume, 0);
+        assert_eq!(
+            e.backend.calls,
+            [
+                Call::Volume(55),
+                Call::Volume(60),
+                Call::Volume(100),
+                Call::Volume(0)
+            ]
+        );
     }
 
     #[tokio::test]

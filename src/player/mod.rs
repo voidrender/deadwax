@@ -17,7 +17,10 @@ pub type UrlFor = Arc<dyn Fn(&Song) -> String + Send + Sync>;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayerCommand {
-    PlayQueue { songs: Vec<Song>, start: usize },
+    PlayQueue {
+        songs: Vec<Song>,
+        start: usize,
+    },
     Append(Vec<Song>),
     PlayNext(Vec<Song>),
     TogglePause,
@@ -25,15 +28,24 @@ pub enum PlayerCommand {
     Prev,
     SeekRelative(f64),
     SeekTo(f64),
-    SetVolume(u8),
+    /// Moves the volume by this many points, clamped to 0..=100. It is
+    /// relative so that quick presses add up even before a snapshot shows
+    /// the last one.
+    ChangeVolume(i16),
     ToggleShuffle,
     CycleRepeat,
     JumpTo(usize),
     Remove(usize),
-    Move { from: usize, to: usize },
+    Move {
+        from: usize,
+        to: usize,
+    },
     Clear,
     Restore(PersistedQueue),
-    SetStarred { song_id: String, starred: bool },
+    SetStarred {
+        song_id: String,
+        starred: bool,
+    },
     Shutdown,
 }
 
