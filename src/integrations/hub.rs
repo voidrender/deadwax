@@ -3,6 +3,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use tokio::task::JoinHandle;
@@ -53,7 +54,13 @@ pub struct Hub<P: HubPorts> {
     /// Presence state, shared with the lookup task.
     shown: Arc<Mutex<Shown>>,
     lookup: Option<JoinHandle<()>>,
+    /// How long a track must keep playing before it is announced, so
+    /// skipping through tracks does not post a notification for each one.
+    settle: Duration,
 }
+
+/// The default for `Hub::settle`.
+const SETTLE: Duration = Duration::from_secs(1);
 
 /// What Discord should show. Updated under one lock so a lookup can't
 /// send an update after the hub has moved on or cleared the presence.
@@ -122,6 +129,7 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
             announced: false,
             shown: Arc::default(),
             lookup: None,
+            settle: SETTLE,
         }
     }
 
@@ -227,6 +235,7 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
             Arc::clone(&self.mbids),
             generation,
             song,
+            self.settle,
         )));
     }
 
@@ -239,15 +248,21 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
     }
 }
 
-/// Fetches the cover and shows the notification, then finds public art
-/// and shows the presence. Each step is skipped once `generation` is stale.
+/// Waits out `settle`, fetches the cover and shows the notification, then
+/// finds public art and shows the presence. A track change aborts the task,
+/// and each step is skipped once `generation` is stale.
 async fn lookup<P: HubPorts + Sync>(
     ports: Arc<P>,
     shown: Arc<Mutex<Shown>>,
     mbids: Arc<Mutex<HashMap<String, Option<String>>>>,
     generation: u64,
     song: Song,
+    settle: Duration,
 ) {
+    tokio::time::sleep(settle).await;
+    if lock(&shown).generation != generation {
+        return;
+    }
     let image_path = match &song.cover_art {
         Some(id) => ports.cover_path(id).await,
         None => None,
@@ -385,9 +400,13 @@ mod tests {
         .unwrap()
     }
 
+    /// A hub that announces at once. `rapid_skips_notify_only_the_last_track`
+    /// covers the settle delay.
     fn hub() -> (Hub<FakePorts>, FakePorts) {
         let ports = FakePorts::default();
-        (Hub::new(ports.clone()), ports)
+        let mut hub = Hub::new(ports.clone());
+        hub.settle = Duration::ZERO;
+        (hub, ports)
     }
 
     fn playing(pos: f64) -> EngineEvent {
@@ -579,6 +598,7 @@ mod tests {
             Arc::clone(&h.mbids),
             stale,
             song("s1", Some("al1")),
+            Duration::ZERO,
         )
         .await;
 
@@ -599,6 +619,24 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn rapid_skips_notify_only_the_last_track() {
+        let ports = FakePorts::default();
+        let mut h = Hub::new(ports.clone());
+        for id in ["s1", "s2", "s3"] {
+            h.on_event(&EngineEvent::TrackStarted(Box::new(song(id, None))), 0);
+            h.on_event(&playing(0.1), 0);
+            // A quarter second per track, well inside the settle time.
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        h.settle().await;
+        let calls = ports.take();
+        let titles: Vec<_> = notifications(&calls).into_iter().map(|n| n.title).collect();
+        assert_eq!(titles, ["Ts3"], "{calls:?}");
+        let shown: Vec<_> = updates(&calls).into_iter().map(|u| u.title).collect();
+        assert_eq!(shown, ["Ts3"], "{calls:?}");
     }
 
     #[tokio::test]
