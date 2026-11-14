@@ -83,19 +83,36 @@ impl Notifier for MacNotifier {
 }
 
 impl MacNotifier {
+    /// Runs the helper's executable directly and waits for it, so its exit
+    /// code arrives. Launching through `open` would hide it. The helper
+    /// gives up after 5 seconds on its own. This blocks, so callers run it
+    /// on a blocking thread.
     fn launch(&self, n: &TrackNotification) -> anyhow::Result<()> {
-        let mut child = std::process::Command::new("open")
-            .args(["-n", "-g", "-a"])
-            .arg(&self.app_path)
-            .arg("--args")
+        let exe = self.app_path.join("Contents/MacOS/DeadwaxNotifier");
+        // Output is captured so nothing the helper prints lands on the TUI.
+        let out = std::process::Command::new(&exe)
             .args(helper_args(n))
-            .spawn()
-            .map_err(|e| anyhow::anyhow!("failed to run open: {e}"))?;
-        // `open` returns quickly; reap it off-thread so no zombie remains.
-        std::thread::spawn(move || {
-            let _ = child.wait();
-        });
-        Ok(())
+            .stdin(std::process::Stdio::null())
+            .output()
+            .map_err(|e| anyhow::anyhow!("couldn't run {}: {e}", exe.display()))?;
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        if !stderr.trim().is_empty() {
+            tracing::debug!("notifier: {}", stderr.trim());
+        }
+        exit_result(out.status.code())
+    }
+}
+
+/// Maps the helper's exit code (see `macos/DeadwaxNotifier/main.swift`).
+fn exit_result(code: Option<i32>) -> anyhow::Result<()> {
+    match code {
+        Some(0) => Ok(()),
+        Some(2) => bail!(
+            "macOS isn't allowing them. Turn on notifications for Deadwax in \
+             System Settings > Notifications"
+        ),
+        Some(code) => bail!("the helper failed with exit code {code}"),
+        None => bail!("the helper was stopped by a signal"),
     }
 }
 
@@ -145,6 +162,32 @@ mod tests {
         };
         let err = notifier.notify(&note(None)).unwrap_err().to_string();
         assert!(err.contains("install-macos-notifier.sh"), "{err}");
+    }
+
+    /// A stand-in helper app whose executable exits with `code`.
+    fn fake_helper(dir: &tempfile::TempDir, code: i32) -> MacNotifier {
+        use std::os::unix::fs::PermissionsExt;
+        let app = dir.path().join("DeadwaxNotifier.app");
+        let bin = app.join("Contents/MacOS");
+        std::fs::create_dir_all(&bin).unwrap();
+        let exe = bin.join("DeadwaxNotifier");
+        std::fs::write(&exe, format!("#!/bin/sh\necho noise\nexit {code}\n")).unwrap();
+        std::fs::set_permissions(&exe, std::fs::Permissions::from_mode(0o755)).unwrap();
+        MacNotifier { app_path: app }
+    }
+
+    #[test]
+    fn helper_exit_codes_become_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        fake_helper(&dir, 0).notify(&note(None)).unwrap();
+
+        let dir = tempfile::tempdir().unwrap();
+        let err = fake_helper(&dir, 2).notify(&note(None)).unwrap_err();
+        assert!(err.to_string().contains("System Settings"), "{err}");
+
+        let dir = tempfile::tempdir().unwrap();
+        let err = fake_helper(&dir, 1).notify(&note(None)).unwrap_err();
+        assert!(err.to_string().contains("exit code 1"), "{err}");
     }
 
     #[test]
