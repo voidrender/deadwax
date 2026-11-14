@@ -5,6 +5,7 @@ pub mod login;
 pub mod playlists;
 pub mod queue_view;
 pub mod search;
+pub mod settings;
 pub mod sort;
 
 use crate::credentials::SavedTo;
@@ -75,6 +76,10 @@ pub enum Popup {
     },
     PlaylistPicker(PickerState),
     Info(Box<info::Info>),
+    /// The settings menu, with the selected row.
+    Settings {
+        sel: usize,
+    },
 }
 
 /// Results of async work spawned by the runtime. The task that issues a
@@ -288,6 +293,8 @@ pub enum Effect {
     LoadCover(String),
     /// Save the sort orders so the next run starts with them.
     SaveSorts(Sorts),
+    /// Write the settings to `config.toml` and apply what can change live.
+    SaveSettings(settings::Settings),
 }
 
 impl Effect {
@@ -368,6 +375,7 @@ impl std::fmt::Debug for Effect {
                 .finish(),
             Self::LoadCover(id) => f.debug_tuple("LoadCover").field(id).finish(),
             Self::SaveSorts(s) => f.debug_tuple("SaveSorts").field(s).finish(),
+            Self::SaveSettings(s) => f.debug_tuple("SaveSettings").field(s).finish(),
         }
     }
 }
@@ -399,6 +407,11 @@ pub struct App {
     random_pending: bool,
     pub help: bool,
     pub popup: Option<Popup>,
+    /// Options from the config that the settings menu changes. The runtime
+    /// fills them in at startup and after a login.
+    pub settings: settings::Settings,
+    /// The album art protocol this run started with.
+    pub image_protocol_at_start: crate::ui::art::ProtocolChoice,
     pub status: Option<(String, Instant)>,
     pub player: PlayerSnapshot,
     pub should_quit: bool,
@@ -736,6 +749,7 @@ impl App {
             } => self.text_input_key(title, value, on_submit, key),
             Popup::PlaylistPicker(picker) => self.picker_key(picker, key),
             Popup::Info(info) => (self.info_key(info, key), Vec::new()),
+            Popup::Settings { sel } => self.settings_key(sel, key),
         };
         self.popup = keep;
         effects
@@ -784,6 +798,7 @@ impl App {
             Action::PlayRandom => return vec![Effect::PlayRandom(RANDOM_COUNT)],
             Action::CycleSort => return self.cycle_sort(),
             Action::ShowInfo => return self.open_info(),
+            Action::ShowSettings => return self.open_settings(),
             Action::TogglePause => PlayerCommand::TogglePause,
             Action::Next => PlayerCommand::Next,
             Action::Prev => PlayerCommand::Prev,

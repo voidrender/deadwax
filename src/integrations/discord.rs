@@ -92,6 +92,9 @@ fn secs_to_millis(secs: i64) -> Option<i64> {
 pub enum PresenceMsg {
     Update(PresenceInfo),
     Clear,
+    /// Clears the activity and closes the connection to Discord. The next
+    /// update connects again.
+    Disconnect,
     Shutdown,
 }
 
@@ -215,6 +218,10 @@ fn run_worker(app_id: &str, default_image: &str, mut rx: mpsc::UnboundedReceiver
             Ok(Some(PresenceMsg::Clear)) => {
                 pending = None;
                 worker.clear();
+            }
+            Ok(Some(PresenceMsg::Disconnect)) => {
+                pending = None;
+                worker.close();
             }
             Ok(Some(PresenceMsg::Shutdown) | None) => break,
             Err(()) => {

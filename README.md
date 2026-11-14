@@ -66,13 +66,14 @@ Requests use Subsonic token auth only. Stream URLs carry credentials, so they ar
 
 ## Configuration
 
-The config file is `$XDG_CONFIG_HOME/deadwax/config.toml`, or `~/.config/deadwax/config.toml` when `XDG_CONFIG_HOME` is not set. This applies on macOS too. The login screen creates it, and you can edit it by hand.
+The config file is `$XDG_CONFIG_HOME/deadwax/config.toml`, or `~/.config/deadwax/config.toml` when `XDG_CONFIG_HOME` is not set. This applies on macOS too. The login screen creates it. You can edit it by hand, and the settings menu (`S`) changes some options while Deadwax runs. The album art protocol takes effect on the next start.
 
 | Key | Default | Meaning |
 |---|---|---|
 | `server_url` | none (required) | Base URL of your server |
 | `username` | none (required) | Login name |
 | `discord` | `true` | Set to `false` to turn off Discord presence |
+| `notifications` | `true` | Set to `false` to turn off track-change notifications |
 | `discord_app_id` | built-in | Discord application ID. Set it to show presence under your own Discord application |
 | `discord_default_image` | `deadwax` | Name of the Discord art asset used when no public cover is found |
 | `image_protocol` | unset (auto) | Album art protocol: `auto`, `kitty`, `iterm2`, `sixel`, or `halfblocks` |
@@ -87,7 +88,7 @@ image_protocol = "kitty"
 
 ## Discord presence
 
-Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Deadwax Terminal" with the track, artist, album, cover, and a button that links to this repository. The Discord desktop app must be running on the same machine. Set `discord = false` in `config.toml` to turn it off.
+Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Deadwax Terminal" with the track, artist, album, cover, and a button that links to this repository. The Discord desktop app must be running on the same machine. Turn it off in the settings menu (`S`), or set `discord = false` in `config.toml`.
 
 To show presence under a different name or default image, use your own Discord application:
 
@@ -131,6 +132,7 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 | `R` | Play 200 random songs |
 | `f` | Toggle favorite on the selected song (or the current track in Now Playing) |
 | `i` | Show the cover and details of the selected song, album, artist, or playlist (or the current track in Now Playing). `i`, `Esc`, or `Enter` closes it |
+| `S` | Settings: Discord presence, notifications, and the album art protocol. `j` `k` move, `Enter` or `space` changes the selected setting, and `S` or `Esc` closes it |
 | `a` | Add the selected song to a playlist (picker popup) |
 | `o` | Change the sort order of the focused list (see below) |
 | `X` | Log out (asks to confirm) |

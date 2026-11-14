@@ -24,6 +24,7 @@ pub enum Action {
     PlayRandom,
     CycleSort,
     ShowInfo,
+    ShowSettings,
 }
 
 /// Seconds moved by `]` and `[`.
@@ -70,6 +71,7 @@ pub fn global_action(key: &KeyEvent) -> Option<Action> {
         'a' => Action::AddToPlaylist,
         'o' => Action::CycleSort,
         'i' => Action::ShowInfo,
+        'S' => Action::ShowSettings,
         _ => return None,
     })
 }
@@ -90,6 +92,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("a", "Add selected song(s) to a playlist"),
     ("o", "Change the sort order of the list"),
     ("i", "Info on the selection"),
+    ("S", "Settings"),
     ("n E D", "New / rename / delete playlist"),
     ("d J K", "Remove / move track in a playlist"),
     ("j k h l", "Move in lists and columns"),

@@ -205,6 +205,18 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
         }
     }
 
+    /// Sends the presence for the current track again, for when presence
+    /// was just turned back on.
+    pub fn refresh_presence(&self, now_ms: i64) {
+        if !self.announced {
+            return;
+        }
+        let shown = lock(&self.shown);
+        if !shown.paused {
+            self.send_update(&shown, now_ms);
+        }
+    }
+
     fn send_update(&self, shown: &Shown, now_ms: i64) {
         if let Some(m) = shown.update(now_ms) {
             self.ports.presence(m);
@@ -619,6 +631,31 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn refresh_resends_the_current_track_unless_paused() {
+        let (mut h, ports) = hub();
+        h.refresh_presence(0);
+        assert!(updates(&ports.take()).is_empty());
+        h.on_event(
+            &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+            0,
+        );
+        h.on_event(&playing(0.1), 0);
+        h.settle().await;
+        ports.take();
+
+        h.refresh_presence(1000);
+        let titles: Vec<_> = updates(&ports.take())
+            .into_iter()
+            .map(|u| u.title)
+            .collect();
+        assert_eq!(titles, ["Ts1"]);
+        h.on_event(&EngineEvent::PauseChanged(true), 2000);
+        ports.take();
+        h.refresh_presence(3000);
+        assert!(updates(&ports.take()).is_empty());
     }
 
     #[tokio::test(start_paused = true)]

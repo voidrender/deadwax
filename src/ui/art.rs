@@ -33,8 +33,9 @@ const QUERY_DEADLINE: Duration = Duration::from_secs(3);
 /// Covers are scaled to fill their area, smoothing as they shrink.
 const RESIZE: Resize = Resize::Scale(Some(FilterType::Triangle));
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ProtocolChoice {
+    #[default]
     Auto,
     Kitty,
     Iterm2,

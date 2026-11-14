@@ -1,10 +1,11 @@
 use crate::app::login::login_error_message;
 use crate::app::playlists::songs_label;
 use crate::app::search::SEARCH_LIMIT;
+use crate::app::settings::Settings;
 use crate::app::sort::Sorts;
 use crate::app::{ApiResult, App, AppEvent, Effect};
 use crate::art::{ArtQuery, CoverCache, Endpoints, PublicArtResolver};
-use crate::config::Config;
+use crate::config::{Config, DEFAULT_DISCORD_APP_ID};
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
 use crate::integrations::discord::{self, PresenceMsg};
 use crate::integrations::hub::{Hub, HubPorts};
@@ -118,7 +119,11 @@ pub struct Ctx {
     session: Arc<AtomicU64>,
     /// Engine events are copied here for the integration hub, stamped with
     /// the unix time they arrived. `None` until `run` starts it.
-    hub: Option<mpsc::UnboundedSender<(EngineEvent, i64)>>,
+    hub: Option<mpsc::UnboundedSender<HubMsg>>,
+    /// Switches the settings menu flips while the app runs.
+    live: Arc<LiveSettings>,
+    /// The Discord presence worker. `None` until `run` starts it.
+    presence: Option<mpsc::UnboundedSender<PresenceMsg>>,
     /// Where the queue is saved. `None` turns saving and restoring off.
     state_path: Option<PathBuf>,
     /// Where the sort orders are saved. `None` turns saving off.
@@ -148,9 +153,88 @@ impl Ctx {
             playlist_rx: Some(playlist_rx),
             session: Arc::new(AtomicU64::new(0)),
             hub: None,
+            live: Arc::default(),
+            presence: None,
             state_path: None,
             sorts_path: None,
         }
+    }
+}
+
+/// Settings that services read on every use, so the settings menu can
+/// change them while the app runs.
+#[derive(Debug)]
+struct LiveSettings {
+    discord: AtomicBool,
+    notifications: AtomicBool,
+}
+
+impl Default for LiveSettings {
+    fn default() -> Self {
+        Self {
+            discord: AtomicBool::new(true),
+            notifications: AtomicBool::new(true),
+        }
+    }
+}
+
+/// Messages for the integration hub.
+enum HubMsg {
+    /// An engine event and the unix time it arrived.
+    Engine(EngineEvent, i64),
+    /// Presence was turned back on, so show the current track again.
+    RefreshPresence,
+}
+
+/// The settings in the config file, or the defaults when there is none.
+fn load_settings(config_path: &Path) -> Settings {
+    match Config::load(config_path) {
+        Ok(Some(c)) => Settings::from_config(&c),
+        Ok(None) => Settings::default(),
+        Err(e) => {
+            tracing::warn!("reading settings failed: {e:#}");
+            Settings::default()
+        }
+    }
+}
+
+/// Gives the app the saved settings and points the live switches at them.
+fn sync_settings(app: &mut App, ctx: &Ctx) {
+    app.settings = load_settings(&ctx.config_path);
+    ctx.live
+        .discord
+        .store(app.settings.discord, Ordering::SeqCst);
+    ctx.live
+        .notifications
+        .store(app.settings.notifications, Ordering::SeqCst);
+}
+
+/// Applies settings from the menu, then writes them to the config.
+fn save_settings(settings: &Settings, app: &mut App, ctx: &Ctx) {
+    let was_on = ctx.live.discord.swap(settings.discord, Ordering::SeqCst);
+    ctx.live
+        .notifications
+        .store(settings.notifications, Ordering::SeqCst);
+    if was_on && !settings.discord {
+        if let Some(presence) = &ctx.presence {
+            let _ = presence.send(PresenceMsg::Disconnect);
+        }
+    } else if !was_on
+        && settings.discord
+        && let Some(hub) = &ctx.hub
+    {
+        let _ = hub.send(HubMsg::RefreshPresence);
+    }
+    let saved = Config::load(&ctx.config_path).and_then(|existing| {
+        let Some(mut config) = existing else {
+            anyhow::bail!("there is no config file yet");
+        };
+        settings.apply_to(&mut config);
+        config.save(&ctx.config_path)
+    });
+    if let Err(e) = saved {
+        tracing::warn!("saving settings failed: {e:#}");
+        app.set_status(format!("Couldn't save settings: {e}"));
     }
 }
 
@@ -178,6 +262,8 @@ where
     let sorts_path = paths::data_dir().join("sorts.json");
     app.set_sorts(Sorts::load(&sorts_path));
     ctx.sorts_path = Some(sorts_path);
+    sync_settings(&mut app, &ctx);
+    app.image_protocol_at_start = app.settings.image_protocol;
     let services = start_services(&mut ctx);
     let result = event_loop(
         terminal,
@@ -267,7 +353,7 @@ where
             },
             ev = ctx.engine_events.recv(), if engine_open => if let Some(ev) = ev {
                 if let Some(hub) = &ctx.hub {
-                    let _ = hub.send((ev.clone(), unix_ms()));
+                    let _ = hub.send(HubMsg::Engine(ev.clone(), unix_ms()));
                 }
                 AppEvent::Engine(ev)
             } else {
@@ -278,6 +364,7 @@ where
         if let AppEvent::Api(ApiResult::LoggedIn { client, .. }) = &ev {
             set_client(&ctx.client, Some(client.clone()));
             spawn_restore(ctx);
+            sync_settings(&mut app, ctx);
         }
         let effects = app.handle_event(ev);
         ctx.session.store(app.session, Ordering::SeqCst);
@@ -461,6 +548,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             }
         }
         // A few bytes, written in order so the last press wins.
+        Effect::SaveSettings(settings) => save_settings(&settings, app, ctx),
         Effect::SaveSorts(sorts) => {
             if let Some(path) = &ctx.sorts_path
                 && let Err(e) = sorts.save(path)
@@ -784,6 +872,7 @@ fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> 
             server_url: server.to_string(),
             username: username.to_string(),
             discord: true,
+            notifications: true,
             discord_app_id: None,
             discord_default_image: "deadwax".to_string(),
             image_protocol: None,
@@ -960,13 +1049,21 @@ impl Services {
 
 fn start_services(ctx: &mut Ctx) -> Services {
     let config = Config::load(&ctx.config_path).ok().flatten();
-    let presence = config.as_ref().and_then(|c| {
-        let app_id = c.presence_app_id()?;
-        Some(discord::spawn_presence(
-            app_id.to_string(),
-            c.discord_default_image.clone(),
-        ))
-    });
+    // The worker only connects to Discord once it has something to show,
+    // so it starts even with presence off. The settings menu can turn
+    // presence on later.
+    // Without a config yet (a first login), the defaults apply.
+    let (app_id, image) = config.as_ref().map_or_else(
+        || (DEFAULT_DISCORD_APP_ID.to_string(), "deadwax".to_string()),
+        |c| {
+            (
+                c.presence_app_id().to_string(),
+                c.discord_default_image.clone(),
+            )
+        },
+    );
+    let presence = Some(discord::spawn_presence(app_id, image));
+    ctx.presence.clone_from(&presence);
     let data = paths::data_dir();
     let cache = paths::cache_dir();
     let outbox = match Outbox::open(data.join("outbox.json")) {
@@ -987,6 +1084,7 @@ fn start_services(ctx: &mut Ctx) -> Services {
         notifier: notify::platform_notifier().into(),
         notify_failed: Arc::new(AtomicBool::new(false)),
         presence: presence.clone(),
+        live: Arc::clone(&ctx.live),
         outbox: Arc::clone(&outbox),
         tx: ctx.tx.clone(),
     };
@@ -1017,10 +1115,13 @@ fn start_services(ctx: &mut Ctx) -> Services {
 /// only hold up the hub, never the UI.
 async fn hub_task<P: HubPorts + Sync + 'static>(
     mut hub: Hub<P>,
-    mut rx: mpsc::UnboundedReceiver<(EngineEvent, i64)>,
+    mut rx: mpsc::UnboundedReceiver<HubMsg>,
 ) {
-    while let Some((ev, at_ms)) = rx.recv().await {
-        hub.on_event(&ev, at_ms);
+    while let Some(msg) = rx.recv().await {
+        match msg {
+            HubMsg::Engine(ev, at_ms) => hub.on_event(&ev, at_ms),
+            HubMsg::RefreshPresence => hub.refresh_presence(unix_ms()),
+        }
     }
 }
 
@@ -1036,8 +1137,9 @@ struct LivePorts {
     notifier: Arc<dyn Notifier>,
     /// A notification has failed this session, so later failures stay quiet.
     notify_failed: Arc<AtomicBool>,
-    /// `None` when Discord presence is off.
+    /// `None` when there was no config to start the worker from.
     presence: Option<mpsc::UnboundedSender<PresenceMsg>>,
+    live: Arc<LiveSettings>,
     outbox: SharedOutbox,
     tx: mpsc::UnboundedSender<AppEvent>,
 }
@@ -1050,6 +1152,9 @@ impl HubPorts for LivePorts {
     }
 
     fn notify(&self, n: TrackNotification) {
+        if !self.live.notifications.load(Ordering::SeqCst) {
+            return;
+        }
         let notifier = Arc::clone(&self.notifier);
         let failed = Arc::clone(&self.notify_failed);
         let tx = self.tx.clone();
@@ -1067,6 +1172,11 @@ impl HubPorts for LivePorts {
     }
 
     fn presence(&self, m: PresenceMsg) {
+        // Updates stop while presence is off. Clears still go through, and
+        // turning presence off already disconnected the worker.
+        if matches!(m, PresenceMsg::Update(_)) && !self.live.discord.load(Ordering::SeqCst) {
+            return;
+        }
         if let Some(tx) = &self.presence {
             let _ = tx.send(m);
         }
@@ -1306,6 +1416,7 @@ mod tests {
             server_url: server.into(),
             username: user.into(),
             discord: true,
+            notifications: true,
             discord_app_id: Some("42".into()),
             discord_default_image: "custom".into(),
             image_protocol: Some("kitty".into()),
@@ -1729,6 +1840,61 @@ mod tests {
         )
         .await
         .expect("loop kept running")
+    }
+
+    #[test]
+    fn saving_settings_applies_them_and_keeps_the_rest_of_the_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let (player, _player_rx) = mpsc::unbounded_channel();
+        let (_snap_tx, snapshot) = watch::channel(PlayerSnapshot::default());
+        let (_events_tx, engine_events) = mpsc::unbounded_channel();
+        let mut ctx = Ctx::new(SharedClient::default(), player, snapshot, engine_events);
+        ctx.config_path = dir.path().join("config.toml");
+        config("https://m.example", "alice")
+            .save(&ctx.config_path)
+            .unwrap();
+        let (presence_tx, mut presence_rx) = mpsc::unbounded_channel();
+        ctx.presence = Some(presence_tx);
+        let (hub_tx, mut hub_rx) = mpsc::unbounded_channel();
+        ctx.hub = Some(hub_tx);
+        let mut app = App::logged_in("s");
+
+        let off = Settings {
+            discord: false,
+            notifications: false,
+            image_protocol: crate::ui::art::ProtocolChoice::Halfblocks,
+        };
+        save_settings(&off, &mut app, &ctx);
+        assert!(matches!(
+            presence_rx.try_recv(),
+            Ok(PresenceMsg::Disconnect)
+        ));
+        assert!(!ctx.live.notifications.load(Ordering::SeqCst));
+        let saved = Config::load(&ctx.config_path).unwrap().unwrap();
+        assert!(!saved.discord && !saved.notifications);
+        assert_eq!(saved.image_protocol.as_deref(), Some("halfblocks"));
+        assert_eq!(saved.username, "alice");
+        assert_eq!(saved.discord_default_image, "custom");
+
+        save_settings(&Settings::default(), &mut app, &ctx);
+        assert!(matches!(hub_rx.try_recv(), Ok(HubMsg::RefreshPresence)));
+        assert!(presence_rx.try_recv().is_err());
+        assert_eq!(
+            Config::load(&ctx.config_path)
+                .unwrap()
+                .unwrap()
+                .image_protocol,
+            None
+        );
+
+        // With no config to write to, the app says so.
+        std::fs::remove_file(&ctx.config_path).unwrap();
+        save_settings(&off, &mut app, &ctx);
+        assert!(
+            app.status_text()
+                .unwrap()
+                .starts_with("Couldn't save settings")
+        );
     }
 
     fn snap_with(ids: &[&str]) -> PlayerSnapshot {

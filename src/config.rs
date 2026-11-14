@@ -28,6 +28,8 @@ pub struct Config {
     pub username: String,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub discord: bool,
+    #[serde(default = "default_true", skip_serializing_if = "is_true")]
+    pub notifications: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discord_app_id: Option<String>,
     #[serde(default = "default_image")]
@@ -37,19 +39,15 @@ pub struct Config {
 }
 
 impl Config {
-    /// The Discord application ID to show presence under, or `None` when
-    /// presence is turned off. A non-empty `discord_app_id` overrides the
-    /// built-in ID.
-    pub fn presence_app_id(&self) -> Option<&str> {
-        if !self.discord {
-            return None;
-        }
-        let configured = self.discord_app_id.as_deref().map(str::trim);
-        Some(
-            configured
-                .filter(|id| !id.is_empty())
-                .unwrap_or(DEFAULT_DISCORD_APP_ID),
-        )
+    /// The Discord application ID to show presence under. A non-empty
+    /// `discord_app_id` overrides the built-in ID. Whether presence is on is
+    /// up to `discord`, which the settings menu can change while running.
+    pub fn presence_app_id(&self) -> &str {
+        self.discord_app_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|id| !id.is_empty())
+            .unwrap_or(DEFAULT_DISCORD_APP_ID)
     }
 
     /// Loads the config, returning `None` when the file does not exist.
@@ -88,6 +86,7 @@ mod tests {
             server_url: "https://music.example".into(),
             username: "alice".into(),
             discord: false,
+            notifications: false,
             discord_app_id: Some("123".into()),
             discord_default_image: "deadwax".into(),
             image_protocol: None,
@@ -128,32 +127,28 @@ mod tests {
     fn presence_uses_built_in_id_by_default() {
         let c = parse("");
         assert!(c.discord);
-        assert_eq!(c.presence_app_id(), Some(DEFAULT_DISCORD_APP_ID));
+        assert_eq!(c.presence_app_id(), DEFAULT_DISCORD_APP_ID);
     }
 
     #[test]
     fn presence_prefers_configured_id() {
-        assert_eq!(
-            parse("discord_app_id = \" 42 \"").presence_app_id(),
-            Some("42")
-        );
+        assert_eq!(parse("discord_app_id = \" 42 \"").presence_app_id(), "42");
     }
 
     #[test]
     fn presence_ignores_blank_configured_id() {
         let c = parse("discord_app_id = \"  \"");
-        assert_eq!(c.presence_app_id(), Some(DEFAULT_DISCORD_APP_ID));
+        assert_eq!(c.presence_app_id(), DEFAULT_DISCORD_APP_ID);
     }
 
     #[test]
-    fn presence_off_when_disabled() {
-        let c = parse("discord = false\ndiscord_app_id = \"42\"");
-        assert_eq!(c.presence_app_id(), None);
-    }
-
-    #[test]
-    fn enabled_discord_is_not_written() {
-        let text = toml::to_string_pretty(&parse("")).unwrap();
+    fn defaults_are_not_written() {
+        let c = parse("");
+        assert!(c.discord && c.notifications);
+        let text = toml::to_string_pretty(&c).unwrap();
         assert!(!text.contains("discord ="), "{text}");
+        assert!(!text.contains("notifications"), "{text}");
+        let off = parse("notifications = false");
+        assert!(!off.notifications);
     }
 }

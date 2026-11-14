@@ -7,6 +7,7 @@ pub mod now_playing;
 pub mod playlists;
 pub mod queue;
 pub mod search;
+pub mod settings;
 pub mod strip;
 pub mod theme;
 pub mod widgets;
@@ -32,6 +33,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let info = info.clone();
             info::draw(frame, area, &info, &mut app.art);
         }
+        Some(Popup::Settings { sel }) => settings::draw(frame, area, app, *sel),
         Some(popup) => draw_popup(frame, area, popup),
         None => {}
     }
@@ -123,8 +125,9 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
             playlists::draw_text_input(frame, area, title, value);
         }
         Popup::PlaylistPicker(picker) => playlists::draw_picker(frame, area, picker),
-        // Drawn by `info::draw`, which needs the art state.
-        Popup::Info(_) => {}
+        // Drawn by `info::draw` and `settings::draw`, which need more than
+        // the popup.
+        Popup::Info(_) | Popup::Settings { .. } => {}
     }
 }
 
