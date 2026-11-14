@@ -34,7 +34,7 @@ jobs:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
     env:
-      SENRITSU_REQUIRE_MPV: "1"
+      DEADWAX_REQUIRE_MPV: "1"
     steps:
       - uses: actions/checkout@v5
       # Installs the toolchain pinned in rust-toolchain.toml and caches builds.
@@ -76,4 +76,4 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - run: scripts/install-macos-notifier.sh --build-only
-      - run: codesign --verify target/notifier/SenritsuNotifier.app
+      - run: codesign --verify target/notifier/DeadwaxNotifier.app

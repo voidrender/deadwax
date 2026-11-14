@@ -58,7 +58,7 @@ impl PublicArtResolver {
     ) -> Self {
         let http = reqwest::Client::builder()
             .timeout(timeout)
-            .user_agent(concat!("senritsu/", env!("CARGO_PKG_VERSION")))
+            .user_agent(concat!("deadwax/", env!("CARGO_PKG_VERSION")))
             .build()
             .expect("static reqwest client config is valid");
         // A missing or corrupt cache file starts empty.

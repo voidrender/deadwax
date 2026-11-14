@@ -6,7 +6,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use std::collections::HashMap;
 
 /// Id of the synthetic album that holds the starred songs.
-pub const FAVORITES_ID: &str = "senritsu:favorites";
+pub const FAVORITES_ID: &str = "deadwax:favorites";
 /// Songs requested by the global `R` key.
 pub const RANDOM_COUNT: u32 = 200;
 

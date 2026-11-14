@@ -22,7 +22,7 @@ use std::time::Duration;
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Overrides `image_protocol` from the config file.
-pub const PROTOCOL_ENV: &str = "SENRITSU_IMAGE_PROTOCOL";
+pub const PROTOCOL_ENV: &str = "DEADWAX_IMAGE_PROTOCOL";
 
 /// How long the terminal gets to answer each read of the protocol query.
 const QUERY_TIMEOUT: Duration = Duration::from_millis(1000);
@@ -60,7 +60,7 @@ pub fn parse_protocol(s: Option<&str>) -> ProtocolChoice {
     }
 }
 
-/// The raw protocol setting: `SENRITSU_IMAGE_PROTOCOL` wins over the config.
+/// The raw protocol setting: `DEADWAX_IMAGE_PROTOCOL` wins over the config.
 pub fn protocol_setting(env: Option<String>, config: Option<String>) -> Option<String> {
     env.filter(|s| !s.trim().is_empty()).or(config)
 }

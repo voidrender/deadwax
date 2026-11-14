@@ -9,22 +9,22 @@ These files are templates for the Homebrew tap and the AUR package. Both build f
 3. Get the checksum of the release tarball:
 
    ```sh
-   curl -sL https://github.com/voidrender/senritsu/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
+   curl -sL https://github.com/voidrender/deadwax/archive/refs/tags/vX.Y.Z.tar.gz | shasum -a 256
    ```
 
 4. Update the Homebrew formula and the PKGBUILD as described below.
 
 ## Homebrew
 
-The formula lives in the `voidrender/homebrew-tap` repository at `Formula/senritsu.rb`. Copy `homebrew/senritsu.rb` there, then set `url` to the new tag and `sha256` to the checksum. Test it with:
+The formula lives in the `voidrender/homebrew-tap` repository at `Formula/deadwax.rb`. Copy `homebrew/deadwax.rb` there, then set `url` to the new tag and `sha256` to the checksum. Test it with:
 
 ```sh
-brew install --build-from-source voidrender/tap/senritsu
-brew test senritsu
-brew audit --strict senritsu
+brew install --build-from-source voidrender/tap/deadwax
+brew test deadwax
+brew audit --strict deadwax
 ```
 
-On macOS the formula also builds `SenritsuNotifier.app` with `scripts/install-macos-notifier.sh --build-only` and installs it to the formula's `libexec`. Senritsu looks for it there.
+On macOS the formula also builds `DeadwaxNotifier.app` with `scripts/install-macos-notifier.sh --build-only` and installs it to the formula's `libexec`. Deadwax looks for it there.
 
 ## AUR
 

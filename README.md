@@ -1,6 +1,6 @@
-# Senritsu
+# Deadwax TUI
 
-Senritsu is a terminal music player for Navidrome and other Subsonic servers. It streams through mpv, shows album art in the terminal, scrobbles to your server, posts track-change notifications, and can publish a "Listening to" status on Discord. It runs on macOS and Linux.
+Deadwax TUI is a terminal music player for Navidrome and other Subsonic servers. It streams through mpv, shows album art in the terminal, scrobbles to your server, posts track-change notifications, and can publish a "Listening to" status on Discord. It runs on macOS and Linux.
 
 ## Requirements
 
@@ -10,21 +10,21 @@ Senritsu is a terminal music player for Navidrome and other Subsonic servers. It
   - Arch: `sudo pacman -S mpv`
 - A Navidrome or Subsonic-compatible server (API 1.16.1)
 
-Senritsu exits with an install hint if it cannot find mpv.
+Deadwax exits with an install hint if it cannot find mpv.
 
 ## Install
 
 ### Homebrew (macOS and Linux)
 
 ```sh
-brew install voidrender/tap/senritsu
+brew install voidrender/tap/deadwax
 ```
 
 The formula installs mpv as a dependency. On macOS it also builds the notification helper, so notifications work without the setup step below.
 
 ### Arch Linux
 
-Install the `senritsu` package from the AUR with your AUR helper, for example `paru -S senritsu`.
+Install the `deadwax` package from the AUR with your AUR helper, for example `paru -S deadwax`.
 
 ### From source
 
@@ -32,7 +32,7 @@ Install the `senritsu` package from the AUR with your AUR helper, for example `p
 cargo install --path .
 ```
 
-This installs the `senritsu` binary. Run `senritsu` and fill in the login screen (server URL, username, password). Use Tab and Shift+Tab to move between fields and Enter to log in.
+This installs the `deadwax` binary. Run `deadwax` and fill in the login screen (server URL, username, password). Use Tab and Shift+Tab to move between fields and Enter to log in.
 
 ### macOS notifications
 
@@ -42,23 +42,23 @@ macOS needs a small signed helper app to show notifications. Homebrew installs i
 scripts/install-macos-notifier.sh
 ```
 
-The script compiles the helper with `swiftc`, ad-hoc signs it, and copies it to `~/Applications/SenritsuNotifier.app`. It then launches the app once, so macOS asks for notification permission the first time. Allow it in the prompt.
+The script compiles the helper with `swiftc`, ad-hoc signs it, and copies it to `~/Applications/DeadwaxNotifier.app`. It then launches the app once, so macOS asks for notification permission the first time. Allow it in the prompt.
 
-To build without installing, pass `--build-only`. The app is left in `target/notifier/SenritsuNotifier.app`.
+To build without installing, pass `--build-only`. The app is left in `target/notifier/DeadwaxNotifier.app`.
 
-Senritsu looks for the helper in this order:
+Deadwax looks for the helper in this order:
 
-1. The path in `SENRITSU_NOTIFIER_APP`, when it is set.
-2. `../libexec/SenritsuNotifier.app` relative to the `senritsu` executable, after resolving symlinks. The Homebrew formula installs it there.
-3. `~/Applications/SenritsuNotifier.app`.
+1. The path in `DEADWAX_NOTIFIER_APP`, when it is set.
+2. `../libexec/DeadwaxNotifier.app` relative to the `deadwax` executable, after resolving symlinks. The Homebrew formula installs it there.
+3. `~/Applications/DeadwaxNotifier.app`.
 
 On Linux, notifications go through the desktop notification service (D-Bus), so no setup is needed.
 
 ## Credentials
 
-After a successful login Senritsu stores your password in the system keychain under the service name `senritsu`, with the account `username@server_url`. The keychain is the only place the password is kept.
+After a successful login Deadwax stores your password in the system keychain under the service name `deadwax`, with the account `username@server_url`. The keychain is the only place the password is kept.
 
-If no keychain is available (for example Linux without a Secret Service), Senritsu does not store the password at all. It writes a salt and the token derived from it to `credentials.toml` next to `config.toml`, with mode `0600`, and shows a status message about the fallback. That token is enough to sign in to your server, so treat the file like a password.
+If no keychain is available (for example Linux without a Secret Service), Deadwax does not store the password at all. It writes a salt and the token derived from it to `credentials.toml` next to `config.toml`, with mode `0600`, and shows a status message about the fallback. That token is enough to sign in to your server, so treat the file like a password.
 
 Logging out (`X`) deletes both the keychain entry and `credentials.toml`.
 
@@ -66,7 +66,7 @@ Requests use Subsonic token auth only. Stream URLs carry credentials, so they ar
 
 ## Configuration
 
-The config file is `$XDG_CONFIG_HOME/senritsu/config.toml`, or `~/.config/senritsu/config.toml` when `XDG_CONFIG_HOME` is not set. This applies on macOS too. The login screen creates it, and you can edit it by hand.
+The config file is `$XDG_CONFIG_HOME/deadwax/config.toml`, or `~/.config/deadwax/config.toml` when `XDG_CONFIG_HOME` is not set. This applies on macOS too. The login screen creates it, and you can edit it by hand.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -74,7 +74,7 @@ The config file is `$XDG_CONFIG_HOME/senritsu/config.toml`, or `~/.config/senrit
 | `username` | none (required) | Login name |
 | `discord` | `true` | Set to `false` to turn off Discord presence |
 | `discord_app_id` | built-in | Discord application ID. Set it to show presence under your own Discord application |
-| `discord_default_image` | `senritsu` | Name of the Discord art asset used when no public cover is found |
+| `discord_default_image` | `deadwax` | Name of the Discord art asset used when no public cover is found |
 | `image_protocol` | unset (auto) | Album art protocol: `auto`, `kitty`, `iterm2`, `sixel`, or `halfblocks` |
 
 Example:
@@ -87,28 +87,28 @@ image_protocol = "kitty"
 
 ## Discord presence
 
-Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Senritsu" with the track, artist, album, cover, and a button that links to this repository. The Discord desktop app must be running on the same machine. Set `discord = false` in `config.toml` to turn it off.
+Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Deadwax Terminal" with the track, artist, album, cover, and a button that links to this repository. The Discord desktop app must be running on the same machine. Set `discord = false` in `config.toml` to turn it off.
 
 To show presence under a different name or default image, use your own Discord application:
 
 1. Open the [Discord developer portal](https://discord.com/developers/applications) and create a new application. Discord shows its name after "Listening to".
 2. Copy the Application ID from the General Information page into `discord_app_id` in `config.toml`.
-3. Under Rich Presence, upload an art asset named `senritsu` (or whatever you set in `discord_default_image`). Senritsu shows it when it cannot find a public cover for the album. `assets/icon/senritsu-discord-1024.png` is the Senritsu icon sized for this.
-4. Restart Senritsu.
+3. Under Rich Presence, upload an art asset named `deadwax` (or whatever you set in `discord_default_image`). Deadwax shows it when it cannot find a public cover for the album. `assets/icon/deadwax-discord-1024.png` is the Deadwax icon sized for this.
+4. Restart Deadwax.
 
 Discord only ever receives public cover art URLs, found by looking up the album on the Cover Art Archive, iTunes, and Deezer. Your Navidrome server's address, username, and credentials are never sent to Discord or to those lookup services. Lookups use only the artist and album names (or the MusicBrainz release ID when your library has one). Results are cached in `public_art.json`.
 
 ## Album art
 
-Senritsu picks the best image protocol your terminal supports, in this order: kitty graphics, iTerm2 inline images, sixel, and a half-block character fallback that works anywhere.
+Deadwax picks the best image protocol your terminal supports, in this order: kitty graphics, iTerm2 inline images, sixel, and a half-block character fallback that works anywhere.
 
 To force a protocol, set the environment variable (it wins over `image_protocol` in the config):
 
 ```sh
-SENRITSU_IMAGE_PROTOCOL=halfblocks senritsu
+DEADWAX_IMAGE_PROTOCOL=halfblocks deadwax
 ```
 
-Accepted values are `auto`, `kitty`, `iterm2`, `sixel`, and `halfblocks`, case-insensitive. An unknown value is logged and treated as `auto`. Some terminals report a protocol they do not render well. If art looks garbled or missing, try `SENRITSU_IMAGE_PROTOCOL=halfblocks`.
+Accepted values are `auto`, `kitty`, `iterm2`, `sixel`, and `halfblocks`, case-insensitive. An unknown value is logged and treated as `auto`. Some terminals report a protocol they do not render well. If art looks garbled or missing, try `DEADWAX_IMAGE_PROTOCOL=halfblocks`.
 
 ## Keys
 
@@ -139,7 +139,7 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 
 ### Sorting
 
-`o` steps through the sort orders of the focused list. The column title shows the current order, and Senritsu remembers your choice between runs.
+`o` steps through the sort orders of the focused list. The column title shows the current order, and Deadwax remembers your choice between runs.
 
 | List | Orders |
 |---|---|
@@ -177,19 +177,19 @@ In the input, `Enter` or `Esc` leaves the input and `↓` jumps to the results. 
 
 | What | macOS | Linux |
 |---|---|---|
-| Config, `credentials.toml` | `~/.config/senritsu/` | `~/.config/senritsu/` |
-| Logs (`senritsu.log`), album art, `public_art.json` | `~/Library/Caches/senritsu/` | `~/.cache/senritsu/` |
-| `state.json` (saved queue), `outbox.json` (scrobbles waiting to send), `sorts.json` (sort orders) | `~/Library/Application Support/senritsu/` | `~/.local/share/senritsu/` |
+| Config, `credentials.toml` | `~/.config/deadwax/` | `~/.config/deadwax/` |
+| Logs (`deadwax.log`), album art, `public_art.json` | `~/Library/Caches/deadwax/` | `~/.cache/deadwax/` |
+| `state.json` (saved queue), `outbox.json` (scrobbles waiting to send), `sorts.json` (sort orders) | `~/Library/Application Support/deadwax/` | `~/.local/share/deadwax/` |
 
 On Linux the config path follows `XDG_CONFIG_HOME`, and the cache and data paths follow `XDG_CACHE_HOME` and `XDG_DATA_HOME`.
 
-The log is a single file, `senritsu.log`, that is appended to and never rotated. Log output never contains stream URLs or credentials.
+The log is a single file, `deadwax.log`, that is appended to and never rotated. Log output never contains stream URLs or credentials.
 
 ## Behavior notes
 
 - A track scrobbles after you have listened to half of it or 4 minutes, whichever comes first. Seeking forward does not count as listening. If the server is unreachable, scrobbles wait in `outbox.json` and are sent later.
 - The queue is saved on exit and restored on the next start.
-- If mpv dies mid-track, Senritsu restarts it and resumes.
+- If mpv dies mid-track, Deadwax restarts it and resumes.
 - Playback is gapless where mpv can do it.
 
 ## Development
@@ -205,12 +205,12 @@ On macOS, keychain access belongs to the exact build that was granted it. Cargo 
 scripts/make-dev-cert.sh
 ```
 
-After that, `cargo run` signs the binary with the "Senritsu Dev" identity before starting it (see `.cargo/config.toml` and `scripts/macos-dev-runner.sh`). The first signing asks you to let `codesign` use the new key, and the first launch asks for keychain access. Choose Always Allow both times. To sign with a different identity, set `SENRITSU_SIGN_IDENTITY` to its name.
+After that, `cargo run` signs the binary with the "Deadwax Dev" identity before starting it (see `.cargo/config.toml` and `scripts/macos-dev-runner.sh`). The first signing asks you to let `codesign` use the new key, and the first launch asks for keychain access. Choose Always Allow both times. To sign with a different identity, set `DEADWAX_SIGN_IDENTITY` to its name.
 
 Binaries from `cargo install` are not signed this way, so macOS asks once after each install.
 
 ## License
 
-Senritsu is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
+Deadwax is licensed under either of the [Apache License, Version 2.0](LICENSE-APACHE) or the [MIT license](LICENSE-MIT), at your option.
 
-Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in Senritsu, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.
+Unless you explicitly state otherwise, any contribution you intentionally submit for inclusion in Deadwax, as defined in the Apache-2.0 license, is dual licensed as above, without any additional terms or conditions.

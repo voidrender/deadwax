@@ -7,7 +7,7 @@ pub struct LinuxNotifier;
 impl Notifier for LinuxNotifier {
     fn notify(&self, n: &TrackNotification) -> anyhow::Result<()> {
         let mut note = Notification::new();
-        note.appname("Senritsu")
+        note.appname("Deadwax")
             .summary(&n.title)
             .body(&format!("{}\n{}", n.artist, n.album))
             .timeout(Timeout::Milliseconds(5000));

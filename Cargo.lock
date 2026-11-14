@@ -735,6 +735,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "092966b41edc516079bdf31ec78a2e0588d1d0c08f78b91d8307215928642b2b"
 
 [[package]]
+name = "deadwax"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "crossterm",
+ "directories",
+ "discord-rich-presence",
+ "futures",
+ "image",
+ "keyring",
+ "md-5",
+ "notify-rust",
+ "rand 0.10.3",
+ "ratatui",
+ "ratatui-image",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "toml",
+ "tracing",
+ "tracing-appender",
+ "tracing-subscriber",
+ "unicode-width",
+ "url",
+ "wiremock",
+]
+
+[[package]]
 name = "deltae"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3072,36 +3102,6 @@ name = "semver"
 version = "1.0.28"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
-
-[[package]]
-name = "senritsu"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "crossterm",
- "directories",
- "discord-rich-presence",
- "futures",
- "image",
- "keyring",
- "md-5",
- "notify-rust",
- "rand 0.10.3",
- "ratatui",
- "ratatui-image",
- "reqwest",
- "serde",
- "serde_json",
- "tempfile",
- "tokio",
- "toml",
- "tracing",
- "tracing-appender",
- "tracing-subscriber",
- "unicode-width",
- "url",
- "wiremock",
-]
 
 [[package]]
 name = "serde"

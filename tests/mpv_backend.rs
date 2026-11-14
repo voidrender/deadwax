@@ -1,5 +1,5 @@
-use senritsu::player::backend::{AudioBackend, BackendEvent, EndReason, LoadMode};
-use senritsu::player::mpv::{MpvBackend, mpv_available};
+use deadwax::player::backend::{AudioBackend, BackendEvent, EndReason, LoadMode};
+use deadwax::player::mpv::{MpvBackend, mpv_available};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use tokio::sync::mpsc::UnboundedReceiver;
@@ -48,13 +48,13 @@ fn fixture() -> Fixture {
     }
 }
 
-/// Skips when mpv is missing, unless `SENRITSU_REQUIRE_MPV` is set. CI sets
+/// Skips when mpv is missing, unless `DEADWAX_REQUIRE_MPV` is set. CI sets
 /// it so these tests cannot pass by skipping.
 fn skip() -> bool {
     if !mpv_available() {
         assert!(
-            std::env::var_os("SENRITSU_REQUIRE_MPV").is_none(),
-            "SENRITSU_REQUIRE_MPV is set but mpv is not installed"
+            std::env::var_os("DEADWAX_REQUIRE_MPV").is_none(),
+            "DEADWAX_REQUIRE_MPV is set but mpv is not installed"
         );
         eprintln!("mpv not installed, skipping");
         return true;

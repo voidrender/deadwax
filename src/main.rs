@@ -2,28 +2,28 @@ use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
 };
+use deadwax::config::Config;
+use deadwax::credentials::{CredentialStore, KeyringBackend};
+use deadwax::player::mpv::{MpvBackend, mpv_available};
+use deadwax::player::{UrlFor, spawn_engine};
+use deadwax::runtime::{self, Ctx, SharedClient};
+use deadwax::ui::art::{self, ProtocolChoice};
+use deadwax::{logging, paths};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
-use senritsu::config::Config;
-use senritsu::credentials::{CredentialStore, KeyringBackend};
-use senritsu::player::mpv::{MpvBackend, mpv_available};
-use senritsu::player::{UrlFor, spawn_engine};
-use senritsu::runtime::{self, Ctx, SharedClient};
-use senritsu::ui::art::{self, ProtocolChoice};
-use senritsu::{logging, paths};
 use std::io::{Stdout, stdout};
 use std::process::ExitCode;
 use std::sync::{Arc, RwLock};
 
 const MPV_MISSING: &str =
-    "Senritsu needs mpv. Install it with: brew install mpv (macOS) or sudo pacman -S mpv (Arch)";
+    "Deadwax needs mpv. Install it with: brew install mpv (macOS) or sudo pacman -S mpv (Arch)";
 
 type Term = Terminal<CrosstermBackend<Stdout>>;
 
 const USAGE: &str = "\
 A terminal music player for Navidrome and other Subsonic servers.
 
-Usage: senritsu [OPTIONS]
+Usage: deadwax [OPTIONS]
 
 Options:
   -h, --help     Print this help
@@ -36,7 +36,7 @@ async fn main() -> ExitCode {
     if let Some(arg) = std::env::args().nth(1) {
         return match arg.as_str() {
             "-V" | "--version" => {
-                println!("senritsu {}", env!("CARGO_PKG_VERSION"));
+                println!("deadwax {}", env!("CARGO_PKG_VERSION"));
                 ExitCode::SUCCESS
             }
             "-h" | "--help" => {
@@ -44,7 +44,7 @@ async fn main() -> ExitCode {
                 ExitCode::SUCCESS
             }
             _ => {
-                eprintln!("senritsu: unknown option '{arg}'\n\n{USAGE}");
+                eprintln!("deadwax: unknown option '{arg}'\n\n{USAGE}");
                 ExitCode::from(2)
             }
         };
@@ -61,7 +61,7 @@ async fn main() -> ExitCode {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             tracing::error!("fatal: {e:#}");
-            eprintln!("senritsu: {e:#}");
+            eprintln!("deadwax: {e:#}");
             ExitCode::FAILURE
         }
     }
@@ -103,7 +103,7 @@ async fn run() -> anyhow::Result<()> {
     result
 }
 
-/// `SENRITSU_IMAGE_PROTOCOL`, else `image_protocol` from the config.
+/// `DEADWAX_IMAGE_PROTOCOL`, else `image_protocol` from the config.
 fn protocol_choice() -> ProtocolChoice {
     let config = Config::load(&runtime::config_path())
         .ok()

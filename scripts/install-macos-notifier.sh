@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Builds, signs, and installs the Senritsu notification helper app.
+# Builds, signs, and installs the Deadwax notification helper app.
 # Usage: scripts/install-macos-notifier.sh [--build-only]
 set -euo pipefail
 
@@ -16,14 +16,14 @@ case "${1:-}" in
 esac
 
 root="$(cd "$(dirname "$0")/.." && pwd)"
-src="$root/macos/SenritsuNotifier"
+src="$root/macos/DeadwaxNotifier"
 out="$root/target/notifier"
-app="$out/SenritsuNotifier.app"
+app="$out/DeadwaxNotifier.app"
 
 rm -rf "$app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 
-swiftc -O "$src/main.swift" -o "$app/Contents/MacOS/SenritsuNotifier" \
+swiftc -O "$src/main.swift" -o "$app/Contents/MacOS/DeadwaxNotifier" \
   -framework AppKit -framework UserNotifications
 cp "$src/Info.plist" "$app/Contents/Info.plist"
 
@@ -38,9 +38,9 @@ fi
 
 dest="$HOME/Applications"
 mkdir -p "$dest"
-rm -rf "$dest/SenritsuNotifier.app"
+rm -rf "$dest/DeadwaxNotifier.app"
 cp -R "$app" "$dest/"
-echo "Installed to $dest/SenritsuNotifier.app"
+echo "Installed to $dest/DeadwaxNotifier.app"
 
 # First run makes macOS ask for notification permission.
-open -n -a "$dest/SenritsuNotifier.app" --args --title Senritsu --body "Notifications enabled"
+open -n -a "$dest/DeadwaxNotifier.app" --args --title Deadwax --body "Notifications enabled"

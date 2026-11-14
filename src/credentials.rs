@@ -2,7 +2,7 @@ use crate::subsonic::Auth;
 use anyhow::Context;
 use std::path::PathBuf;
 
-const SERVICE: &str = "senritsu";
+const SERVICE: &str = "deadwax";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretError {

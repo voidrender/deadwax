@@ -15,7 +15,7 @@ func parseArgs() -> [String: String] {
 }
 
 func warn(_ message: String) {
-    FileHandle.standardError.write(Data("SenritsuNotifier: \(message)\n".utf8))
+    FileHandle.standardError.write(Data("DeadwaxNotifier: \(message)\n".utf8))
 }
 
 /// Cached covers use a `.img` extension, so detect the real type from magic bytes.
@@ -67,7 +67,7 @@ center.requestAuthorization(options: [.alert]) { granted, _ in
         return
     }
     let content = UNMutableNotificationContent()
-    content.title = args["title"] ?? "Senritsu"
+    content.title = args["title"] ?? "Deadwax"
     content.subtitle = args["subtitle"] ?? ""
     content.body = args["body"] ?? ""
     if let att = attachment(for: args["image"]) {

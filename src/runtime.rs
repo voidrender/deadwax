@@ -749,7 +749,7 @@ fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> 
             username: username.to_string(),
             discord: true,
             discord_app_id: None,
-            discord_default_image: "senritsu".to_string(),
+            discord_default_image: "deadwax".to_string(),
             image_protocol: None,
         },
     };
@@ -1411,7 +1411,7 @@ mod tests {
         let path = dir.path().join("sub/config.toml");
         save_config(&path, "https://m.example", "alice").unwrap();
         let c = Config::load(&path).unwrap().unwrap();
-        assert_eq!(c.discord_default_image, "senritsu");
+        assert_eq!(c.discord_default_image, "deadwax");
         assert_eq!(c.username, "alice");
     }
 

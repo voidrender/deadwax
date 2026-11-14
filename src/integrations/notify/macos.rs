@@ -5,7 +5,7 @@ use anyhow::bail;
 
 use super::{Notifier, TrackNotification};
 
-/// Posts notifications through the signed `SenritsuNotifier.app` helper.
+/// Posts notifications through the signed `DeadwaxNotifier.app` helper.
 pub struct MacNotifier {
     pub app_path: PathBuf,
 }
@@ -17,7 +17,7 @@ impl MacNotifier {
         let home = directories::UserDirs::new().map(|d| d.home_dir().to_path_buf());
         Self {
             app_path: resolve_app_path(
-                std::env::var_os("SENRITSU_NOTIFIER_APP"),
+                std::env::var_os("DEADWAX_NOTIFIER_APP"),
                 exe.as_deref(),
                 home.as_deref(),
             ),
@@ -25,16 +25,16 @@ impl MacNotifier {
     }
 }
 
-const APP_NAME: &str = "SenritsuNotifier.app";
+const APP_NAME: &str = "DeadwaxNotifier.app";
 
 /// Picks the helper app path, in this order:
 ///
-/// 1. `SENRITSU_NOTIFIER_APP`, when set.
-/// 2. `../libexec/SenritsuNotifier.app` next to the executable, when it
+/// 1. `DEADWAX_NOTIFIER_APP`, when set.
+/// 2. `../libexec/DeadwaxNotifier.app` next to the executable, when it
 ///    exists. Package managers such as Homebrew install it there. `exe` must
-///    already have symlinks resolved, because Homebrew's `bin/senritsu` is a
+///    already have symlinks resolved, because Homebrew's `bin/deadwax` is a
 ///    symlink into the package's own directory.
-/// 3. `~/Applications/SenritsuNotifier.app`, where the install script puts it.
+/// 3. `~/Applications/DeadwaxNotifier.app`, where the install script puts it.
 fn resolve_app_path(env: Option<OsString>, exe: Option<&Path>, home: Option<&Path>) -> PathBuf {
     if let Some(path) = env {
         return PathBuf::from(path);
@@ -141,7 +141,7 @@ mod tests {
     fn missing_bundle_is_a_clear_error() {
         let dir = tempfile::tempdir().unwrap();
         let notifier = MacNotifier {
-            app_path: dir.path().join("SenritsuNotifier.app"),
+            app_path: dir.path().join("DeadwaxNotifier.app"),
         };
         let err = notifier.notify(&note(None)).unwrap_err().to_string();
         assert!(err.contains("install-macos-notifier.sh"), "{err}");
@@ -150,7 +150,7 @@ mod tests {
     #[test]
     fn env_var_wins() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = bundled_prefix(&dir).join("bin/senritsu");
+        let exe = bundled_prefix(&dir).join("bin/deadwax");
         let got = resolve_app_path(Some("/x/Custom.app".into()), Some(&exe), Some(dir.path()));
         assert_eq!(got, PathBuf::from("/x/Custom.app"));
     }
@@ -159,26 +159,26 @@ mod tests {
     fn bundled_helper_beats_home() {
         let dir = tempfile::tempdir().unwrap();
         let prefix = bundled_prefix(&dir);
-        let got = resolve_app_path(None, Some(&prefix.join("bin/senritsu")), Some(dir.path()));
-        assert_eq!(got, prefix.join("libexec/SenritsuNotifier.app"));
+        let got = resolve_app_path(None, Some(&prefix.join("bin/deadwax")), Some(dir.path()));
+        assert_eq!(got, prefix.join("libexec/DeadwaxNotifier.app"));
     }
 
     #[test]
     fn falls_back_to_home_applications() {
         let dir = tempfile::tempdir().unwrap();
-        let exe = dir.path().join("cargo/bin/senritsu");
+        let exe = dir.path().join("cargo/bin/deadwax");
         let got = resolve_app_path(None, Some(&exe), Some(Path::new("/Users/a")));
         assert_eq!(
             got,
-            PathBuf::from("/Users/a/Applications/SenritsuNotifier.app")
+            PathBuf::from("/Users/a/Applications/DeadwaxNotifier.app")
         );
     }
 
-    /// Lays out `<dir>/Cellar/senritsu/1.0/libexec/SenritsuNotifier.app`, the
+    /// Lays out `<dir>/Cellar/deadwax/1.0/libexec/DeadwaxNotifier.app`, the
     /// way Homebrew installs it, and returns the version directory.
     fn bundled_prefix(dir: &tempfile::TempDir) -> PathBuf {
-        let prefix = dir.path().join("Cellar/senritsu/1.0");
-        std::fs::create_dir_all(prefix.join("libexec/SenritsuNotifier.app")).unwrap();
+        let prefix = dir.path().join("Cellar/deadwax/1.0");
+        std::fs::create_dir_all(prefix.join("libexec/DeadwaxNotifier.app")).unwrap();
         prefix
     }
 }

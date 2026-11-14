@@ -3,13 +3,13 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>app.senritsu.notifier</string>
+    <string>app.deadwax.notifier</string>
     <key>CFBundleName</key>
-    <string>Senritsu</string>
+    <string>Deadwax</string>
     <key>CFBundleDisplayName</key>
-    <string>Senritsu</string>
+    <string>Deadwax</string>
     <key>CFBundleExecutable</key>
-    <string>SenritsuNotifier</string>
+    <string>DeadwaxNotifier</string>
     <key>CFBundleIconFile</key>
     <string>AppIcon</string>
     <key>CFBundlePackageType</key>

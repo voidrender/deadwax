@@ -8,7 +8,7 @@ use super::models::{ArtistIndexes, SongList};
 use super::{AlbumWithSongs, Artist, ArtistWithAlbums, Auth, SearchResults, Song, SubsonicError};
 
 const API_VERSION: &str = "1.16.1";
-const CLIENT_NAME: &str = "senritsu";
+const CLIENT_NAME: &str = "deadwax";
 
 /// Async Subsonic API client. Cheap to clone.
 #[derive(Clone)]
@@ -262,7 +262,7 @@ mod tests {
         Mock::given(path("/rest/ping"))
             .and(query_param("u", "alice"))
             .and(query_param("v", "1.16.1"))
-            .and(query_param("c", "senritsu"))
+            .and(query_param("c", "deadwax"))
             .and(query_param("f", "json"))
             .respond_with(ok())
             .mount(&server)

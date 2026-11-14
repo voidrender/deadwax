@@ -6,7 +6,7 @@
 # the keychain asks for your password again. Builds signed with one stable
 # identity keep their access across rebuilds.
 #
-# Usage: scripts/make-dev-cert.sh [name]   (default name: "Senritsu Dev")
+# Usage: scripts/make-dev-cert.sh [name]   (default name: "Deadwax Dev")
 set -euo pipefail
 
 if [[ "$(uname -s)" != "Darwin" ]]; then
@@ -14,7 +14,7 @@ if [[ "$(uname -s)" != "Darwin" ]]; then
   exit 1
 fi
 
-name="${1:-Senritsu Dev}"
+name="${1:-Deadwax Dev}"
 keychain="$HOME/Library/Keychains/login.keychain-db"
 
 if security find-certificate -c "$name" "$keychain" >/dev/null 2>&1; then
@@ -55,5 +55,5 @@ openssl pkcs12 -export "${legacy[@]}" -name "$name" \
 # -T lets codesign use the key without asking each time.
 security import "$work/identity.p12" -k "$keychain" -P "$pass" -T /usr/bin/codesign
 
-echo "Created \"$name\". cargo run now signs Senritsu with it."
+echo "Created \"$name\". cargo run now signs Deadwax with it."
 echo "The first launch after this asks for keychain access once. Choose Always Allow."

@@ -1,10 +1,10 @@
 # Maintainer: Isaac Overacker <isaac@overacker.me>
-pkgname=senritsu
+pkgname=deadwax
 pkgver=0.1.0
 pkgrel=1
 pkgdesc='Terminal music player for Navidrome and other Subsonic servers'
 arch=('x86_64' 'aarch64')
-url='https://github.com/voidrender/senritsu'
+url='https://github.com/voidrender/deadwax'
 license=('MIT OR Apache-2.0')
 depends=('mpv' 'gcc-libs' 'glibc')
 makedepends=('cargo')
@@ -35,7 +35,7 @@ check() {
 
 package() {
   cd "$pkgname-$pkgver"
-  install -Dm755 target/release/senritsu -t "$pkgdir/usr/bin/"
+  install -Dm755 target/release/deadwax -t "$pkgdir/usr/bin/"
   install -Dm644 README.md -t "$pkgdir/usr/share/doc/$pkgname/"
   install -Dm644 LICENSE-MIT LICENSE-APACHE -t "$pkgdir/usr/share/licenses/$pkgname/"
 }

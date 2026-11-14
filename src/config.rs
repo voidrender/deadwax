@@ -2,12 +2,12 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 
-/// Application ID of the Senritsu app in the Discord developer portal. It is a
+/// Application ID of the Deadwax app in the Discord developer portal. It is a
 /// public identifier, not a secret, so it ships in the binary.
 pub const DEFAULT_DISCORD_APP_ID: &str = "1570279686548881418";
 
 fn default_image() -> String {
-    "senritsu".to_string()
+    "deadwax".to_string()
 }
 
 fn default_true() -> bool {
@@ -89,7 +89,7 @@ mod tests {
             username: "alice".into(),
             discord: false,
             discord_app_id: Some("123".into()),
-            discord_default_image: "senritsu".into(),
+            discord_default_image: "deadwax".into(),
             image_protocol: None,
         };
         c.save(&path).unwrap();
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn default_image_defaults_when_absent() {
         let c: Config = toml::from_str("server_url = \"https://x\"\nusername = \"a\"").unwrap();
-        assert_eq!(c.discord_default_image, "senritsu");
+        assert_eq!(c.discord_default_image, "deadwax");
     }
 
     fn parse(extra: &str) -> Config {

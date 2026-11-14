@@ -44,7 +44,7 @@ pub fn mpv_available() -> bool {
 /// user, who would then receive our auth-bearing stream URLs.
 fn private_socket_dir() -> anyhow::Result<tempfile::TempDir> {
     let dir = tempfile::Builder::new()
-        .prefix("senritsu-mpv-")
+        .prefix("deadwax-mpv-")
         .tempdir()
         .context("couldn't create the mpv socket directory")?;
     std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))?;

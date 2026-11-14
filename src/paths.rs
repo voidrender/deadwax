@@ -1,11 +1,11 @@
 use directories::ProjectDirs;
 use std::path::{Path, PathBuf};
 
-/// Config directory: `$XDG_CONFIG_HOME/senritsu`, else `~/.config/senritsu`.
+/// Config directory: `$XDG_CONFIG_HOME/deadwax`, else `~/.config/deadwax`.
 pub fn config_dir_from(xdg: Option<&Path>, home: &Path) -> PathBuf {
     match xdg {
-        Some(x) => x.join("senritsu"),
-        None => home.join(".config").join("senritsu"),
+        Some(x) => x.join("deadwax"),
+        None => home.join(".config").join("deadwax"),
     }
 }
 
@@ -19,7 +19,7 @@ pub fn config_dir() -> PathBuf {
 }
 
 fn project_dirs() -> ProjectDirs {
-    ProjectDirs::from("", "", "senritsu").expect("home directory is available")
+    ProjectDirs::from("", "", "deadwax").expect("home directory is available")
 }
 
 fn ensure(dir: &Path) {
@@ -50,11 +50,11 @@ mod tests {
     fn config_dir_prefers_xdg() {
         assert_eq!(
             config_dir_from(Some(Path::new("/x")), Path::new("/home/a")),
-            PathBuf::from("/x/senritsu")
+            PathBuf::from("/x/deadwax")
         );
         assert_eq!(
             config_dir_from(None, Path::new("/home/a")),
-            PathBuf::from("/home/a/.config/senritsu")
+            PathBuf::from("/home/a/.config/deadwax")
         );
     }
 }

@@ -61,7 +61,7 @@ pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
         .border_style(theme::border())
-        .title(Span::styled(" Senritsu ", theme::accent_bold()));
+        .title(Span::styled(" Deadwax ", theme::accent_bold()));
     let rect = centered(area, WIDTH.min(area.width), HEIGHT.min(area.height));
     frame.render_widget(Paragraph::new(lines).block(block), rect);
 }

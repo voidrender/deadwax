@@ -74,7 +74,7 @@ pub fn build_activity(info: &PresenceInfo, default_image: &str, now_unix: i64) -
 }
 
 /// Label of the presence button that links to the project.
-const REPO_BUTTON_LABEL: &str = "Get Senritsu";
+const REPO_BUTTON_LABEL: &str = "Get Deadwax";
 
 /// Where the presence button points.
 const REPO_URL: &str = env!("CARGO_PKG_REPOSITORY");
@@ -101,7 +101,7 @@ const RETRY_INTERVAL: Duration = Duration::from_secs(15);
 pub fn spawn_presence(app_id: String, default_image: String) -> mpsc::UnboundedSender<PresenceMsg> {
     let (tx, rx) = mpsc::unbounded_channel();
     let spawned = std::thread::Builder::new()
-        .name("senritsu-discord".into())
+        .name("deadwax-discord".into())
         .spawn(move || run_worker(&app_id, &default_image, rx));
     if let Err(e) = spawned {
         tracing::debug!("discord worker spawn failed: {e}");
@@ -254,7 +254,7 @@ mod tests {
 
     #[test]
     fn timestamps_reflect_position() {
-        let a = build_activity(&info(), "senritsu", 1000);
+        let a = build_activity(&info(), "deadwax", 1000);
         assert_eq!(a.start_ts, 970);
         assert_eq!(a.end_ts, Some(1170));
         assert_eq!(a.details, "Song");
@@ -274,14 +274,14 @@ mod tests {
     fn zero_duration_has_no_end() {
         let mut i = info();
         i.duration = 0;
-        assert_eq!(build_activity(&i, "senritsu", 1000).end_ts, None);
+        assert_eq!(build_activity(&i, "deadwax", 1000).end_ts, None);
     }
 
     #[test]
     fn missing_image_uses_default_key() {
         let mut i = info();
         i.image_url = None;
-        assert_eq!(build_activity(&i, "senritsu", 1000).large_image, "senritsu");
+        assert_eq!(build_activity(&i, "deadwax", 1000).large_image, "deadwax");
     }
 
     #[test]
