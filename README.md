@@ -205,7 +205,7 @@ On macOS, keychain access belongs to the exact build that was granted it. Cargo 
 scripts/make-dev-cert.sh
 ```
 
-After that, `cargo run` signs the binary with the "Deadwax Dev" identity before starting it (see `.cargo/config.toml` and `scripts/macos-dev-runner.sh`). The first signing asks you to let `codesign` use the new key, and the first launch asks for keychain access. Choose Always Allow both times. To sign with a different identity, set `DEADWAX_SIGN_IDENTITY` to its name.
+After that, `cargo run` signs the binary with the "Deadwax Dev" identity before starting it (see `.cargo/config.toml` and `scripts/macos-dev-runner.sh`). The script asks for your login password in the terminal, so `codesign` can use the new key without a dialog. If your keychain already holds a Deadwax password saved by a differently signed build, the first launch asks for keychain access once. Choose Always Allow. To sign with a different identity, set `DEADWAX_SIGN_IDENTITY` to its name.
 
 Binaries from `cargo install` are not signed this way, so macOS asks once after each install.
 

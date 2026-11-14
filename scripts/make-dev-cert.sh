@@ -55,5 +55,11 @@ openssl pkcs12 -export "${legacy[@]}" -name "$name" \
 # -T lets codesign use the key without asking each time.
 security import "$work/identity.p12" -k "$keychain" -P "$pass" -T /usr/bin/codesign
 
+# Newer macOS also checks the key's partition list. Adding codesign to it
+# here stops the "Always Allow" dialog on the first signing. The security
+# command asks for your login password in the terminal.
+echo "Enter your login password to let codesign use the new key."
+security set-key-partition-list -S apple-tool:,apple:,codesign: \
+  -s -t private -l "$name" "$keychain" >/dev/null
+
 echo "Created \"$name\". cargo run now signs Deadwax with it."
-echo "The first launch after this asks for keychain access once. Choose Always Allow."
