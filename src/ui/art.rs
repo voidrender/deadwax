@@ -73,7 +73,7 @@ pub fn protocol_setting(env: Option<String>, config: Option<String>) -> Option<S
 pub fn make_picker(choice: ProtocolChoice) -> Picker {
     let picker = match choice {
         ProtocolChoice::Halfblocks => halfblocks(),
-        ProtocolChoice::Auto => query_picker().unwrap_or_else(halfblocks),
+        ProtocolChoice::Auto => query_picker().map_or_else(halfblocks, answered_only),
         forced => {
             let mut picker = query_picker().unwrap_or_else(guessed_font_picker);
             picker.set_protocol_type(match forced {
@@ -90,6 +90,22 @@ pub fn make_picker(choice: ProtocolChoice) -> Picker {
         protocol_name(picker.protocol_type())
     );
     picker
+}
+
+/// Keeps an automatic choice only when the terminal answered the query.
+/// When it stays silent, ratatui-image falls back to hints like
+/// `TERM_PROGRAM=iTerm.app`, which are often inherited from another
+/// terminal (over SSH, or a terminal launched from iTerm2). Images in the
+/// wrong protocol show up as garbage, so half-blocks are safer there.
+fn answered_only(picker: Picker) -> Picker {
+    if picker.protocol_type() == ProtocolType::Halfblocks || !picker.capabilities().is_empty() {
+        return picker;
+    }
+    tracing::info!(
+        "terminal didn't answer the image query, so not trusting {} from the environment",
+        protocol_name(picker.protocol_type())
+    );
+    halfblocks()
 }
 
 pub fn protocol_name(p: ProtocolType) -> &'static str {
@@ -727,6 +743,20 @@ mod tests {
         assert_eq!(kitty_ids(&mut art, Slot::Large), first);
         // Slots shown at the same time keep apart.
         assert_ne!(kitty_ids(&mut art, Slot::Strip), first);
+    }
+
+    #[test]
+    fn auto_ignores_a_protocol_the_terminal_never_confirmed() {
+        for proto in [ProtocolType::Iterm2, ProtocolType::Kitty] {
+            // A halfblocks picker has no answered capabilities, like a
+            // silent terminal's.
+            let mut guessed = halfblocks();
+            guessed.set_protocol_type(proto);
+            assert_eq!(
+                answered_only(guessed).protocol_type(),
+                ProtocolType::Halfblocks
+            );
+        }
     }
 
     #[test]
