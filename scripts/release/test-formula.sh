@@ -24,6 +24,8 @@ formula="$("$root/scripts/release/render-formula.sh" "$version" "$sha")"
 tap="deadwax/release-test"
 brew untap --force "$tap" >/dev/null 2>&1 || true
 brew tap-new --no-git "$tap" >/dev/null
+# Homebrew only loads formulae from taps you have trusted.
+brew trust --tap "$tap" >/dev/null
 file="$(brew --repository "$tap")/Formula/deadwax.rb"
 
 if [[ -n "$tarball" ]]; then

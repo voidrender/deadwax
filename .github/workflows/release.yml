@@ -131,21 +131,10 @@ jobs:
       - name: Install git and ssh
         run: pacman -Syu --noconfirm --needed git openssh
       - uses: actions/checkout@v5
-      - name: Render the PKGBUILD
-        run: |
-          mkdir -p /tmp/pkg
-          scripts/release/render-pkgbuild.sh "$VERSION" "$SHA256" > /tmp/pkg/PKGBUILD
-      # makepkg refuses to run as root, so a build user does it. Building
-      # here also runs the PKGBUILD's check(), so a broken package never
-      # reaches the AUR.
+      # Building here also runs the PKGBUILD's check(), so a broken package
+      # never reaches the AUR.
       - name: Build the package
-        run: |
-          useradd -m builder
-          echo 'builder ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/builder
-          chown -R builder /tmp/pkg
-          cd /tmp/pkg
-          sudo -u builder makepkg --syncdeps --noconfirm --cleanbuild
-          sudo -u builder sh -c 'makepkg --printsrcinfo > .SRCINFO'
+        run: scripts/release/build-aur.sh "$VERSION" "$SHA256" /tmp/pkg
       - name: Push to the AUR
         run: |
           if [[ -z "$AUR_KEY" ]]; then

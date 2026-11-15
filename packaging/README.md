@@ -22,6 +22,20 @@ The tag starts the release workflow, which:
 
 Rerunning a failed job is safe. An existing release is kept, and a formula or PKGBUILD that hasn't changed isn't committed again.
 
+## Dry run
+
+The release dry run (`.github/workflows/release-dry-run.yml`) does what a release does to the formula and the AUR package, but publishes nothing. It builds a tarball of the current commit the way GitHub does, then installs, tests and audits the formula on macOS and builds the AUR package with its `check()` on Arch Linux. It runs on pull requests that change the packaging, the release scripts, the notifier, or `Cargo.toml`, and you can start it on any branch from the Actions tab.
+
+The dry run never touches the tap or the AUR, so it doesn't check the two secrets. To check them before tagging:
+
+```sh
+# The tap token: lists the tap's branches, or fails if the token can't read it.
+git ls-remote "https://x-access-token:$TOKEN@github.com/voidrender/homebrew-tap.git"
+
+# The AUR key: prints the AUR's help text when the key is accepted.
+ssh -i ~/.ssh/aur-deadwax aur@aur.archlinux.org help
+```
+
 ## One-time setup
 
 The workflow needs two secrets in the `deadwax` repository. Without one of them, its job logs a warning and skips publishing.
