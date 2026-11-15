@@ -1,6 +1,6 @@
 use super::theme;
 use super::widgets::centered;
-use crate::app::login::{LoginField, LoginState};
+use crate::app::login::{LoginField, LoginState, cleartext_warning};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -10,6 +10,8 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 const WIDTH: u16 = 58;
 const HEIGHT: u16 = 12;
 const LABEL_WIDTH: usize = 10;
+/// Short enough to fit the login box.
+const CLEARTEXT_WARNING: &str = "This server uses http://. Your login is not encrypted.";
 
 /// The wordmark above the login box. Solid blocks take the accent color and
 /// the outline glyphs form a dim shadow.
@@ -88,6 +90,8 @@ pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
         Line::styled(format!(" {err}"), Style::new().fg(Color::Red))
     } else if let Some(warning) = &login.warning {
         Line::styled(format!(" {warning}"), theme::muted())
+    } else if cleartext_warning(&login.server) {
+        Line::styled(format!(" {CLEARTEXT_WARNING}"), theme::muted())
     } else {
         Line::raw("")
     };
@@ -167,6 +171,17 @@ mod tests {
         login.busy = false;
         login.error = Some("Wrong username or password".into());
         assert!(render(&login, 80, 24).contains("Wrong username or password"));
+    }
+
+    #[test]
+    fn warns_about_plain_http_off_the_lan() {
+        let mut login = LoginState {
+            server: "http://music.example.com".into(),
+            ..Default::default()
+        };
+        assert!(render(&login, 80, 24).contains(CLEARTEXT_WARNING));
+        login.server = "http://192.168.1.2:4533".into();
+        assert!(!render(&login, 80, 24).contains(CLEARTEXT_WARNING));
     }
 
     #[test]

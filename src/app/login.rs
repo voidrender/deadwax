@@ -48,6 +48,38 @@ pub fn normalize_server_url(input: &str) -> String {
     with_scheme.trim_end_matches('/').to_string()
 }
 
+/// Whether the login would go out unencrypted beyond the local network:
+/// an `http://` server that is not loopback, a private address, or a
+/// local-only name. Plain HTTP is fine for a server on the LAN.
+pub fn cleartext_warning(server: &str) -> bool {
+    let Ok(url) = url::Url::parse(&normalize_server_url(server)) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => {
+            let [a, b, ..] = ip.octets();
+            // 100.64.0.0/10 is CGNAT space, which Tailscale uses.
+            let cgnat = a == 100 && (64..128).contains(&b);
+            !(ip.is_loopback() || ip.is_private() || ip.is_link_local() || cgnat)
+        }
+        Some(url::Host::Ipv6(ip)) => {
+            !(ip.is_loopback() || ip.is_unique_local() || ip.is_unicast_link_local())
+        }
+        Some(url::Host::Domain(name)) => {
+            let name = name.trim_end_matches('.');
+            // A name without a dot, such as "nas", only resolves on the LAN.
+            name.contains('.')
+                && ![".local", ".lan", ".home.arpa", ".internal"]
+                    .iter()
+                    .any(|suffix| name.ends_with(suffix))
+        }
+        None => false,
+    }
+}
+
 pub fn login_error_message(e: &SubsonicError) -> String {
     match e {
         SubsonicError::Api { code: 40, .. } => "Wrong username or password".to_string(),
@@ -154,6 +186,48 @@ mod tests {
         assert_eq!(normalize_server_url("http://x:4533"), "http://x:4533");
         assert_eq!(normalize_server_url("  https://a.b//  "), "https://a.b");
         assert_eq!(normalize_server_url("   "), "");
+    }
+
+    #[test]
+    fn cleartext_warning_skips_https_and_local_servers() {
+        for server in [
+            "https://music.example.com",
+            "music.example.com",
+            "http://localhost:4533",
+            "http://nas:4533",
+            "http://127.0.0.1",
+            "http://127.4.5.6",
+            "http://[::1]:4533",
+            "http://10.0.0.2",
+            "http://172.16.0.1",
+            "http://172.31.255.255",
+            "http://192.168.1.20:4533",
+            "http://169.254.0.1",
+            "http://100.64.0.1",
+            "http://100.127.255.255",
+            "http://[fd00::1]",
+            "http://nas.local",
+            "http://nas.lan/",
+            "http://nas.home.arpa",
+            "http://music.internal",
+            "",
+        ] {
+            assert!(!cleartext_warning(server), "{server}");
+        }
+    }
+
+    #[test]
+    fn cleartext_warning_flags_public_http_servers() {
+        for server in [
+            "http://music.example.com",
+            "http://8.8.8.8",
+            "http://172.32.0.1",
+            "http://100.128.0.1",
+            "http://[2001:db8::1]",
+            "http://notlocal.lanparty.com",
+        ] {
+            assert!(cleartext_warning(server), "{server}");
+        }
     }
 
     #[test]
