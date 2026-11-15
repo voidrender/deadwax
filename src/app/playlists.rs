@@ -635,6 +635,13 @@ impl App {
             }
             ApiResult::PlaylistMutated { result, id } => {
                 self.playlists.pending = self.playlists.pending.saturating_sub(1);
+                // A result that names the held playlist is followed by its
+                // own, newer reload, so the held copy is out of date.
+                if id.is_some()
+                    && self.playlists.held_reload.as_ref().map(|(h, _)| h) == id.as_ref()
+                {
+                    self.playlists.held_reload = None;
+                }
                 if self.playlists.pending == 0
                     && let Some((held, reload)) = self.playlists.held_reload.take()
                     && let Err(msg) = self.playlists.apply_reload(&held, reload)
@@ -829,6 +836,43 @@ mod tests {
         assert_eq!(app.playlists.tracks, Loadable::Loading);
         api(&mut app, mutated(Ok(String::new()), Some("pl1")));
         assert_eq!(track_ids(&app), ids(&["x", "new"]));
+    }
+
+    #[test]
+    fn a_held_reload_is_dropped_when_a_newer_one_is_coming() {
+        let mut app = app_with_playlist();
+        app.playlists.focus = PlColumn::Lists;
+        press(&mut app, 'j');
+        for _ in 0..2 {
+            app.popup = Some(Popup::PlaylistPicker(PickerState {
+                song_ids: ids(&["new"]),
+                songs: vec![song("new")],
+                lists: app.playlists.lists.clone(),
+                sel: 2,
+            }));
+            key(&mut app, KeyCode::Enter);
+        }
+        api(&mut app, mutated(Ok(String::new()), Some("pl2")));
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("new")]),
+            },
+        );
+        api(&mut app, mutated(Ok(String::new()), Some("pl2")));
+        // The second add's reload is still on its way.
+        assert_eq!(app.playlists.tracks, Loadable::Loading);
+        app.playlists.focus = PlColumn::Tracks;
+        assert!(press(&mut app, 'J').is_empty());
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("new"), song("new")]),
+            },
+        );
+        assert_eq!(track_ids(&app), ids(&["x", "new", "new"]));
     }
 
     #[test]
