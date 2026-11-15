@@ -1,5 +1,5 @@
 use super::theme;
-use super::widgets::centered;
+use super::widgets::{centered, tail};
 use crate::app::login::{LoginField, LoginState, cleartext_warning};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -64,7 +64,9 @@ fn logo_lines(rows: &[&str]) -> Vec<Line<'static>> {
         .collect()
 }
 
-fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
+/// One field row. Editing only appends, so a long value shows its end,
+/// where the caret is. `room` is the columns left for the value.
+fn field_line(label: &str, value: &str, focused: bool, room: usize) -> Line<'static> {
     let label_style = if focused {
         theme::accent_bold()
     } else {
@@ -72,7 +74,7 @@ fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
     };
     let mut spans = vec![
         Span::styled(format!(" {label:<LABEL_WIDTH$}"), label_style),
-        Span::raw(value.to_string()),
+        Span::raw(tail(value, room).to_string()),
     ];
     if focused {
         spans.push(Span::styled("▏", theme::accent()));
@@ -83,6 +85,8 @@ fn field_line(label: &str, value: &str, focused: bool) -> Line<'static> {
 pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
     let masked = "•".repeat(login.password.chars().count());
     let focus = |f| login.focus == f;
+    // Borders, the leading space, the label and the caret take the rest.
+    let room = usize::from(WIDTH.min(area.width)).saturating_sub(LABEL_WIDTH + 4);
 
     let notice = if login.busy {
         Line::styled(" Connecting…", theme::muted())
@@ -98,9 +102,14 @@ pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
 
     let lines = vec![
         Line::raw(""),
-        field_line("Server", &login.server, focus(LoginField::Server)),
-        field_line("Username", &login.username, focus(LoginField::Username)),
-        field_line("Password", &masked, focus(LoginField::Password)),
+        field_line("Server", &login.server, focus(LoginField::Server), room),
+        field_line(
+            "Username",
+            &login.username,
+            focus(LoginField::Username),
+            room,
+        ),
+        field_line("Password", &masked, focus(LoginField::Password), room),
         Line::raw(""),
         notice,
         Line::raw(""),
@@ -182,6 +191,18 @@ mod tests {
         assert!(render(&login, 80, 24).contains(CLEARTEXT_WARNING));
         login.server = "http://192.168.1.2:4533".into();
         assert!(!render(&login, 80, 24).contains(CLEARTEXT_WARNING));
+    }
+
+    #[test]
+    fn long_fields_show_their_end_and_the_caret() {
+        let server = format!("https://{}.example", "a".repeat(44));
+        assert_eq!(server.chars().count(), 60);
+        let login = LoginState {
+            server,
+            ..Default::default()
+        };
+        let text = render(&login, 80, 24);
+        assert!(text.contains("aaa.example▏"), "{text}");
     }
 
     #[test]
