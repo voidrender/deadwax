@@ -4,25 +4,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use anyhow::Context;
 
 use crate::subsonic::SubsonicClient;
+use crate::subsonic::auth::md5_hex;
 
 static TMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
-/// On-disk cache of server cover art, keyed by cover id and size.
+/// On-disk cache of server cover art, keyed by server, cover id and size.
 pub struct CoverCache {
     dir: PathBuf,
     client: SubsonicClient,
-}
-
-fn sanitize(id: &str) -> String {
-    id.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
 }
 
 impl CoverCache {
@@ -30,8 +19,10 @@ impl CoverCache {
         Self { dir, client }
     }
 
+    /// Cover ids are only unique per server, so the name hashes both.
     fn path_for(&self, cover_id: &str, size: u32) -> PathBuf {
-        self.dir.join(format!("{}-{size}.img", sanitize(cover_id)))
+        let key = md5_hex(&format!("{}\u{1f}{cover_id}", self.client.server_url()));
+        self.dir.join(format!("{key}-{size}.img"))
     }
 
     /// Returns the cached file, fetching and storing it first if missing.
@@ -92,17 +83,18 @@ mod tests {
         let b = cache.get("al-1", 300).await.unwrap();
         assert_eq!(a, b);
         assert_eq!(std::fs::read(&a).unwrap(), vec![1, 2, 3]);
-        assert_eq!(a.file_name().unwrap(), "al-1-300.img");
+        assert!(a.to_str().unwrap().ends_with("-300.img"));
     }
 
     #[test]
-    fn cover_cache_sanitizes_ids() {
-        let cache = CoverCache::new(PathBuf::from("/cache"), client("http://127.0.0.1:1"));
-        let p = cache.path_for("al-1/../x", 64);
+    fn cover_paths_differ_by_server_and_stay_in_the_cache() {
+        let one = CoverCache::new(PathBuf::from("/cache"), client("http://one.example"));
+        let two = CoverCache::new(PathBuf::from("/cache"), client("http://two.example"));
+        assert_ne!(one.path_for("al-12", 64), two.path_for("al-12", 64));
+        assert_ne!(one.path_for("a/b", 64), one.path_for("a?b", 64));
+        let p = one.path_for("al-1/../x", 64);
         let name = p.file_name().unwrap().to_str().unwrap();
-        assert!(!name.contains('/'));
-        assert!(!name.contains(".."));
+        assert!(!name.contains('/') && !name.contains(".."));
         assert_eq!(p.parent().unwrap(), PathBuf::from("/cache"));
-        assert_eq!(name, "al-1____x-64.img");
     }
 }
