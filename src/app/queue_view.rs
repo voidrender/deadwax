@@ -47,8 +47,15 @@ impl QueueViewState {
 }
 
 impl App {
+    /// The selected song. It is found by uid first, because J and K move
+    /// the selection before the player's snapshot shows the new order.
     pub fn selected_queue_song(&self) -> Option<&Song> {
-        self.player.items.get(self.queue.sel).map(|i| &i.song)
+        let items = &self.player.items;
+        items
+            .iter()
+            .find(|i| Some(i.uid) == self.queue.anchor)
+            .or_else(|| items.get(self.queue.sel))
+            .map(|i| &i.song)
     }
 
     pub(super) fn handle_queue_key(&mut self, key: KeyEvent) -> Vec<Effect> {
@@ -183,6 +190,13 @@ mod tests {
             [Effect::Player(PlayerCommand::Move { from: 1, to: 0 })]
         );
         assert_eq!(app.queue.sel, 0);
+    }
+
+    #[test]
+    fn a_pending_move_keeps_the_selected_song() {
+        let mut app = app_with(&[1, 2, 3]);
+        press(&mut app, 'J');
+        assert_eq!(app.selected_queue_song().map(|s| s.id.as_str()), Some("1"));
     }
 
     #[test]
