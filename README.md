@@ -12,7 +12,7 @@ Deadwax is a terminal music player for Navidrome and other Subsonic servers. It 
 
 ## Requirements
 
-- mpv on your `PATH`. Homebrew and the AUR package install it for you. Otherwise:
+- mpv on your `PATH`. Homebrew and the Arch package install it for you. Otherwise:
   - macOS: `brew install mpv`
   - Arch: `sudo pacman -S mpv`
 - A Navidrome server, or another server that speaks Subsonic API 1.16.1 or newer
@@ -31,7 +31,15 @@ On macOS the formula also installs the notification helper, so notifications wor
 
 ### Arch Linux
 
-Install the `deadwax` package from the AUR with your AUR helper, for example `yay -S deadwax`.
+The AUR package isn't up yet. Until it is, every release comes with a tested `PKGBUILD` attached. Build and install it with:
+
+```sh
+mkdir deadwax && cd deadwax
+curl -LO https://github.com/voidrender/deadwax/releases/latest/download/PKGBUILD
+makepkg -si
+```
+
+Homebrew on Linux works too.
 
 ### From source
 

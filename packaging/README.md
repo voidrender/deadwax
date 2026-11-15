@@ -18,7 +18,7 @@ The tag starts the release workflow, which:
 2. Runs CI on the tagged commit.
 3. Creates the GitHub release with generated notes.
 4. Installs, tests and audits the formula on macOS and Linux from a local tap, then commits it to your tap.
-5. Builds the AUR package in an Arch Linux container, running its tests, then pushes `PKGBUILD` and `.SRCINFO` to the AUR.
+5. Builds the AUR package in an Arch Linux container, running its tests, attaches the `PKGBUILD` to the release, then pushes `PKGBUILD` and `.SRCINFO` to the AUR.
 
 Rerunning a failed job is safe. An existing release is kept, and a formula or PKGBUILD that hasn't changed isn't committed again.
 

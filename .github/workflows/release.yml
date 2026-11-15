@@ -129,18 +129,24 @@ jobs:
     needs: [version, release]
     runs-on: ubuntu-latest
     container: archlinux:base-devel
+    permissions:
+      contents: write
     env:
       VERSION: ${{ needs.version.outputs.version }}
       SHA256: ${{ needs.release.outputs.sha256 }}
       AUR_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Install git and ssh
-        run: pacman -Syu --noconfirm --needed git openssh
+      - name: Install git, ssh and gh
+        run: pacman -Syu --noconfirm --needed git openssh github-cli
       - uses: actions/checkout@v5
       # Building here also runs the PKGBUILD's check(), so a broken package
       # never reaches the AUR.
       - name: Build the package
         run: scripts/release/build-aur.sh "$VERSION" "$SHA256" /tmp/pkg
+      # Lets Arch users build the package with makepkg without the AUR.
+      - name: Attach the PKGBUILD to the release
+        run: gh release upload "$GITHUB_REF_NAME" /tmp/pkg/PKGBUILD --clobber --repo "$GITHUB_REPOSITORY"
       - name: Push to the AUR
         run: |
           if [[ -z "$AUR_KEY" ]]; then
