@@ -17,8 +17,21 @@ fi
 name="${1:-Deadwax Dev}"
 keychain="$HOME/Library/Keychains/login.keychain-db"
 
+# Newer macOS also checks the key's partition list. Adding codesign to it
+# stops the "Always Allow" dialog on the first signing. The security command
+# asks for your login password in the terminal.
+grant_codesign_access() {
+  echo "Enter your login password to let codesign use the key."
+  security set-key-partition-list -S apple-tool:,apple:,codesign: \
+    -s -t private -l "$name" "$keychain" >/dev/null
+}
+
+# Running the script again finishes a setup that stopped at the password
+# prompt.
 if security find-certificate -c "$name" "$keychain" >/dev/null 2>&1; then
   echo "A certificate named \"$name\" is already in your login keychain."
+  grant_codesign_access
+  echo "codesign can use \"$name\"."
   exit 0
 fi
 
@@ -55,11 +68,6 @@ openssl pkcs12 -export "${legacy[@]}" -name "$name" \
 # -T lets codesign use the key without asking each time.
 security import "$work/identity.p12" -k "$keychain" -P "$pass" -T /usr/bin/codesign
 
-# Newer macOS also checks the key's partition list. Adding codesign to it
-# here stops the "Always Allow" dialog on the first signing. The security
-# command asks for your login password in the terminal.
-echo "Enter your login password to let codesign use the new key."
-security set-key-partition-list -S apple-tool:,apple:,codesign: \
-  -s -t private -l "$name" "$keychain" >/dev/null
+grant_codesign_access
 
 echo "Created \"$name\". cargo run now signs Deadwax with it."
