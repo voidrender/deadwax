@@ -208,6 +208,7 @@ The log is a single file, `deadwax.log`, that is appended to and never rotated. 
 - The queue is saved on exit and restored on the next start.
 - If mpv dies mid-track, Deadwax restarts it and resumes.
 - Playback is gapless where mpv can do it.
+- Only one Deadwax runs at a time. A second one prints a message and exits.
 
 ## Troubleshooting
 

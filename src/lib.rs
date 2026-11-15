@@ -2,6 +2,7 @@ pub mod app;
 pub mod art;
 pub mod config;
 pub mod credentials;
+pub mod instance;
 pub mod integrations;
 pub mod logging;
 pub mod paths;

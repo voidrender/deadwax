@@ -8,7 +8,7 @@ use deadwax::player::mpv::{MpvBackend, mpv_available};
 use deadwax::player::{UrlFor, spawn_engine};
 use deadwax::runtime::{self, Ctx, SharedClient};
 use deadwax::ui::art::{self, ProtocolChoice};
-use deadwax::{logging, paths};
+use deadwax::{instance, logging, paths};
 use ratatui::Terminal;
 use ratatui::backend::CrosstermBackend;
 use std::io::{Stdout, stdout};
@@ -51,6 +51,19 @@ async fn main() -> ExitCode {
     }
 
     let _guard = logging::init(&paths::cache_dir());
+
+    // Two instances would overwrite each other's queue and scrobble files.
+    let _lock = match instance::lock(&paths::data_dir().join("deadwax.lock")) {
+        Ok(Some(file)) => Some(file),
+        Ok(None) => {
+            eprintln!("Deadwax is already running.");
+            return ExitCode::FAILURE;
+        }
+        Err(e) => {
+            tracing::warn!("couldn't take the instance lock: {e}");
+            None
+        }
+    };
 
     if !mpv_available() {
         eprintln!("{MPV_MISSING}");
