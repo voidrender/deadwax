@@ -63,9 +63,23 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "Source tarball sha256: $sha"
 
+  # Installs the formula from a local tap first, so a formula that doesn't
+  # build never reaches the real tap.
+  homebrew-check:
+    name: Test the formula (macOS)
+    needs: [version, release]
+    runs-on: macos-latest
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+      SHA256: ${{ needs.release.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install, test and audit
+        run: scripts/release/test-formula.sh "$VERSION" "$SHA256"
+
   homebrew:
     name: Update the Homebrew tap
-    needs: [version, release]
+    needs: [version, release, homebrew-check]
     runs-on: ubuntu-latest
     env:
       VERSION: ${{ needs.version.outputs.version }}
@@ -104,18 +118,6 @@ jobs:
             git commit -m "deadwax $VERSION"
             git push
           fi
-
-  homebrew-check:
-    name: Install from the tap (macOS)
-    needs: homebrew
-    runs-on: macos-latest
-    steps:
-      - name: Install, test and audit
-        run: |
-          brew tap "${GITHUB_REPOSITORY_OWNER}/tap"
-          brew install --build-from-source "${GITHUB_REPOSITORY_OWNER}/tap/deadwax"
-          brew test deadwax
-          brew audit --strict deadwax
 
   aur:
     name: Publish to the AUR
