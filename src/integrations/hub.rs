@@ -17,13 +17,20 @@ use crate::subsonic::Song;
 
 /// What the hub needs from the outside world. The sync methods must not
 /// block; they hand the work off.
+/// A finished album MBID lookup, with the login it was asked of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MbidLookup {
+    pub account: String,
+    pub mbid: Option<String>,
+}
+
 pub trait HubPorts: Send {
     fn scrobble(&self, a: ScrobbleAction);
     fn notify(&self, n: TrackNotification);
     fn presence(&self, m: PresenceMsg);
-    /// The album's release MBID. The outer `None` means the
-    /// lookup failed and may be tried again.
-    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>>;
+    /// The album's release MBID, and the login that answered. `None`
+    /// means the lookup failed and may be tried again.
+    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<MbidLookup>>;
     fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>>;
     /// The login server calls go to. Album ids are only unique per server,
     /// so cached MBIDs are kept per login.
@@ -306,8 +313,10 @@ async fn lookup<P: HubPorts + Sync>(
             if let Some(m) = known {
                 m
             } else if let Some(found) = ports.album_mbid(id).await {
-                lock(&mbids).insert(key, found.clone());
-                found
+                // Cached under the login that answered, which can differ from
+                // `key` if the login changed during the lookup.
+                lock(&mbids).insert((found.account, id.clone()), found.mbid.clone());
+                found.mbid
             } else {
                 None
             }
@@ -367,6 +376,9 @@ mod tests {
         /// How many album lookups fail before they start to succeed.
         mbid_failures: Arc<std::sync::atomic::AtomicUsize>,
         account: Arc<Mutex<String>>,
+        /// The login that answers MBID lookups, when it differs from
+        /// `account`.
+        lookup_account: Arc<Mutex<Option<String>>>,
     }
 
     impl FakePorts {
@@ -388,13 +400,20 @@ mod tests {
         fn presence(&self, m: PresenceMsg) {
             self.record(Call::Presence(m));
         }
-        fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>> {
+        fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<MbidLookup>> {
             self.record(Call::AlbumMbid(album_id.to_string()));
             let failed = self
                 .mbid_failures
                 .fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
                 .is_ok();
-            Box::pin(async move { (!failed).then(|| Some("m1".to_string())) })
+            let account = self.lookup_account.lock().unwrap().clone();
+            let account = account.unwrap_or_else(|| self.account());
+            Box::pin(async move {
+                (!failed).then(|| MbidLookup {
+                    account,
+                    mbid: Some("m1".to_string()),
+                })
+            })
         }
         fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>> {
             // The private cache path is named after the server, so a leak
@@ -793,6 +812,38 @@ mod tests {
             .filter(|c| matches!(c, Call::AlbumMbid(_)))
             .count();
         assert_eq!(lookups, 2, "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn an_mbid_is_cached_under_the_login_that_answered() {
+        let (mut h, ports) = hub();
+        let play = |h: &mut Hub<FakePorts>| {
+            h.on_event(
+                &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
+                0,
+            );
+            h.on_event(&playing(0.1), 0);
+        };
+        "alice@a".clone_into(&mut ports.account.lock().unwrap());
+        *ports.lookup_account.lock().unwrap() = Some("alice@b".into());
+        play(&mut h);
+        h.settle().await;
+        *ports.lookup_account.lock().unwrap() = None;
+        // alice@a never got an answer of its own, so it asks again.
+        play(&mut h);
+        h.settle().await;
+        let lookups = |calls: &[Call]| {
+            calls
+                .iter()
+                .filter(|c| matches!(c, Call::AlbumMbid(_)))
+                .count()
+        };
+        assert_eq!(lookups(&ports.take()), 2);
+        // alice@b's answer was kept.
+        "alice@b".clone_into(&mut ports.account.lock().unwrap());
+        play(&mut h);
+        h.settle().await;
+        assert_eq!(lookups(&ports.take()), 0);
     }
 
     #[tokio::test]

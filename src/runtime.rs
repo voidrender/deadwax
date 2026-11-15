@@ -8,7 +8,7 @@ use crate::art::{ArtQuery, CoverCache, Endpoints, PublicArtResolver};
 use crate::config::{Config, DEFAULT_DISCORD_APP_ID};
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
 use crate::integrations::discord::{self, PresenceMsg};
-use crate::integrations::hub::{Hub, HubPorts};
+use crate::integrations::hub::{Hub, HubPorts, MbidLookup};
 use crate::integrations::notify::{self, Notifier, TrackNotification};
 use crate::paths;
 use crate::player::persist::PersistedQueue;
@@ -1205,15 +1205,19 @@ impl HubPorts for LivePorts {
 
     /// Only Discord presence uses the MBID, so nothing is fetched while it
     /// is off.
-    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>> {
+    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<MbidLookup>> {
         if !self.live.discord.load(Ordering::SeqCst) {
             return Box::pin(async { None });
         }
         let client = current_client(&self.client);
         let id = album_id.to_string();
         Box::pin(async move {
-            match client?.get_album(&id).await {
-                Ok(a) => Some(a.album.music_brainz_id.filter(|m| !m.trim().is_empty())),
+            let client = client?;
+            match client.get_album(&id).await {
+                Ok(a) => Some(MbidLookup {
+                    account: account_key(&client),
+                    mbid: a.album.music_brainz_id.filter(|m| !m.trim().is_empty()),
+                }),
                 Err(e) => {
                     tracing::warn!("album {id} lookup failed: {e}");
                     None
