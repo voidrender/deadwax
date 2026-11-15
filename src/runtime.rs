@@ -1362,6 +1362,7 @@ fn spawn_restore(ctx: &Ctx) {
         tokio::spawn(restore_queue(
             path,
             account_key(&client),
+            ctx.client.clone(),
             ctx.snapshot.clone(),
             ctx.player.clone(),
         ));
@@ -1369,10 +1370,12 @@ fn spawn_restore(ctx: &Ctx) {
 }
 
 /// A missing or unreadable state file is logged and skipped, and so is a
-/// queue saved by a different login.
+/// queue saved by a different login. `client` is checked again before the
+/// restore, in case the login changed while the file was read.
 async fn restore_queue(
     path: PathBuf,
     account: String,
+    client: SharedClient,
     snapshot: watch::Receiver<PlayerSnapshot>,
     player: mpsc::UnboundedSender<PlayerCommand>,
 ) {
@@ -1392,7 +1395,8 @@ async fn restore_queue(
             return;
         }
     };
-    if snapshot.borrow().items.is_empty() {
+    let still_active = current_client(&client).is_some_and(|c| account_key(&c) == account);
+    if still_active && snapshot.borrow().items.is_empty() {
         let _ = player.send(PlayerCommand::Restore(saved));
     }
 }
@@ -2021,10 +2025,12 @@ mod tests {
         let path = dir.path().join("state.json");
         let (player, mut player_rx) = mpsc::unbounded_channel();
 
+        let shared = alice();
         let restore = |snap: &watch::Receiver<PlayerSnapshot>, account: &str| {
             restore_queue(
                 path.clone(),
                 account.to_string(),
+                shared.clone(),
                 snap.clone(),
                 player.clone(),
             )
@@ -2060,6 +2066,11 @@ mod tests {
         saved.save(&path).unwrap();
         restore(&empty, ALICE).await;
         assert_eq!(player_rx.try_recv().unwrap(), PlayerCommand::Restore(saved));
+
+        // A logout or another login before the restore runs keeps it out.
+        set_client(&shared, None);
+        restore(&empty, ALICE).await;
+        assert!(player_rx.try_recv().is_err());
     }
 
     #[tokio::test]
