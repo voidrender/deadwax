@@ -113,27 +113,40 @@ impl<S: SecretBackend> CredentialStore<S> {
             }
             Err(SecretError::Unavailable(reason)) => {
                 tracing::warn!("keychain unavailable, using token file: {reason}");
-                self.write_file(&account(server_url, username), password)?;
+                let account = account(server_url, username);
+                self.write_file(&account, password)?;
+                // An older keychain entry would otherwise outlive this save.
+                let _ = self.secrets.delete(&account);
                 Ok(SavedTo::File)
             }
             Err(e) => Err(e.into()),
         }
     }
 
-    /// Prefers the keychain password, then the token file.
+    /// Prefers the token file, then the keychain password. A keychain save
+    /// removes the file, so a file for this login is the newest save.
     pub fn load(&self, server_url: &str, username: &str) -> anyhow::Result<Option<Auth>> {
-        match self.secrets.get(&account(server_url, username)) {
+        let account = account(server_url, username);
+        let file = self.load_file(&account);
+        if let Ok(Some(_)) = &file {
+            return file;
+        }
+        match self.secrets.get(&account) {
             Ok(Some(password)) => return Ok(Some(Auth::Password(password))),
             Ok(None) | Err(SecretError::Unavailable(_)) => {}
             Err(e) => return Err(e.into()),
         }
+        file
+    }
+
+    fn load_file(&self, account: &str) -> anyhow::Result<Option<Auth>> {
         let text = match std::fs::read_to_string(&self.file_path) {
             Ok(t) => t,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e).context("reading credentials file"),
         };
         let file: TokenFile = toml::from_str(&text).context("parsing credentials file")?;
-        if file.account.is_empty() || file.account != account(server_url, username) {
+        if file.account.is_empty() || file.account != account {
             return Ok(None);
         }
         Ok(Some(Auth::Token {
@@ -285,6 +298,19 @@ mod tests {
         ));
         std::fs::write(&s.file_path, "salt = \"a\"\ntoken = \"b\"\n").unwrap();
         assert!(s.load(URL, "me").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_newer_token_file_wins_over_an_old_keychain_entry() {
+        let (_dir, s) = store(false);
+        s.save(URL, "me", "new").unwrap();
+        let secrets = FakeSecrets::new(true);
+        secrets.set(&account(URL, "me"), "old").unwrap();
+        let s = CredentialStore::new(secrets, s.file_path.clone());
+        match s.load(URL, "me").unwrap() {
+            Some(Auth::Token { token, salt }) => assert_eq!(token, md5_hex(&format!("new{salt}"))),
+            other => panic!("unexpected: {other:?}"),
+        }
     }
 
     #[test]
