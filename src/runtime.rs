@@ -899,7 +899,6 @@ fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> 
 /// blanked even if the secret could not be removed, so the next start does not
 /// log back in silently.
 fn logout(app: &mut App, ctx: &Ctx) {
-    let _ = ctx.player.send(PlayerCommand::Clear);
     let (server, username) = match current_client(&ctx.client) {
         Some(c) => (c.server_url().to_string(), c.username().to_string()),
         None => Config::load(&ctx.config_path)
@@ -908,7 +907,11 @@ fn logout(app: &mut App, ctx: &Ctx) {
             .map(|c| (c.server_url, c.username))
             .unwrap_or_default(),
     };
+    // The client goes before the queue is cleared. A restore that checked
+    // the login earlier sent its queue first, so Clear removes it, and one
+    // that checks now finds no login.
     set_client(&ctx.client, None);
+    let _ = ctx.player.send(PlayerCommand::Clear);
     app.show_login_after_logout(&server);
 
     let tx = ctx.tx.clone();
@@ -1424,10 +1427,16 @@ async fn restore_queue(
             return;
         }
     };
-    let still_active = current_client(&client).is_some_and(|c| account_key(&c) == account);
+    // The read lock is held through the send, so logout can't clear the
+    // queue between the login check and the restore.
+    let guard = client
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let still_active = guard.as_ref().is_some_and(|c| account_key(c) == account);
     if still_active && snapshot.borrow().items.is_empty() {
         let _ = player.send(PlayerCommand::Restore(saved));
     }
+    drop(guard);
 }
 
 #[cfg(test)]
