@@ -33,6 +33,12 @@ pub struct PlaylistsState {
     pub list_sort: PlaylistSort,
     /// Server order of the loaded playlists.
     list_ranks: HashMap<String, usize>,
+    /// Loads sent per playlist whose result has not arrived. The worker
+    /// answers in order, so a load sent before an add returns before it.
+    loads: HashMap<String, usize>,
+    /// Loads of a playlist sent before songs were added to it. Their
+    /// results predate the add, so they are dropped.
+    stale_loads: HashMap<String, usize>,
 }
 
 /// State of the add-to-playlist popup. Row 0 is "+ New playlist" and row
@@ -219,6 +225,9 @@ impl PlaylistsState {
 
     /// Appends songs the server is about to receive, when `id` is shown.
     fn append_local(&mut self, id: &str, added: &[Song]) {
+        if let Some(&n) = self.loads.get(id) {
+            self.stale_loads.insert(id.to_string(), n);
+        }
         if self.tracks_for.as_deref() == Some(id)
             && let Loadable::Loaded(songs) = &mut self.tracks
         {
@@ -233,9 +242,29 @@ impl PlaylistsState {
         }
     }
 
-    /// Counts the mutations among freshly returned effects.
+    /// Counts the mutations and playlist loads among freshly returned
+    /// effects.
     fn note_effects(&mut self, effects: &[Effect]) {
         self.pending += effects.iter().filter(|e| e.is_playlist_mutation()).count();
+        for e in effects {
+            if let Effect::LoadPlaylist(id) | Effect::ResyncPlaylist(id) = e {
+                *self.loads.entry(id.clone()).or_default() += 1;
+            }
+        }
+    }
+
+    /// Settles one load of `id`. Returns true when its result is stale.
+    fn finish_load(&mut self, id: &str) -> bool {
+        if let Some(n) = self.loads.get_mut(id) {
+            *n = n.saturating_sub(1);
+        }
+        match self.stale_loads.get_mut(id) {
+            Some(n) if *n > 0 => {
+                *n -= 1;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Removes the selected track locally and returns the server edit.
@@ -578,6 +607,9 @@ impl App {
                 })
             }
             ApiResult::Playlist { id, result } => {
+                if self.playlists.finish_load(&id) {
+                    return Vec::new();
+                }
                 if let Err(msg) = self.playlists.apply_tracks(&id, result) {
                     self.set_status(format!("Couldn't load the playlist: {msg}"));
                 }
@@ -710,6 +742,46 @@ mod tests {
         let effects = press(&mut app, 'J');
         assert_eq!(track_ids(&app), ids(&["a", "b", "c", "d"]));
         assert_eq!(effects.len(), 1);
+    }
+
+    #[test]
+    fn a_load_sent_before_an_add_is_dropped() {
+        let mut app = app_with_playlist();
+        app.playlists.focus = PlColumn::Lists;
+        assert_eq!(press(&mut app, 'j'), [Effect::LoadPlaylist("pl2".into())]);
+        app.popup = Some(Popup::PlaylistPicker(PickerState {
+            song_ids: ids(&["new"]),
+            songs: vec![song("new")],
+            lists: app.playlists.lists.clone(),
+            sel: 2,
+        }));
+        assert_eq!(
+            key(&mut app, KeyCode::Enter),
+            [Effect::AddToPlaylist {
+                id: "pl2".into(),
+                song_ids: ids(&["new"]),
+            }]
+        );
+        api(
+            &mut app,
+            ApiResult::Playlist {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("y")]),
+            },
+        );
+        assert_eq!(app.playlists.tracks, Loadable::Loading);
+        app.playlists.focus = PlColumn::Tracks;
+        assert!(press(&mut app, 'J').is_empty());
+        api(&mut app, mutated(Ok(String::new()), Some("pl2")));
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("y"), song("new")]),
+            },
+        );
+        assert_eq!(track_ids(&app), ids(&["x", "y", "new"]));
+        assert_eq!(press(&mut app, 'J').len(), 1);
     }
 
     #[test]
