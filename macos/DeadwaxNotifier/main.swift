@@ -72,7 +72,9 @@ center.getNotificationSettings { settings in
     }
     checked.signal()
 }
-checked.wait()
+if checked.wait(timeout: .now() + 5) == .timedOut {
+    exit(1)
+}
 
 center.requestAuthorization(options: [.alert]) { granted, _ in
     guard granted else {
