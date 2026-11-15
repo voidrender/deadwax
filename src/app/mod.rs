@@ -136,8 +136,8 @@ pub enum ApiResult {
         /// as refreshing until the reload lands.
         id: Option<String>,
     },
-    /// A playlist worker result tagged with the session it belongs to.
-    /// Results from before a logout or login are dropped.
+    /// A server result tagged with the session it belongs to. Results
+    /// from before a logout or login are dropped.
     Session {
         session: u64,
         inner: Box<ApiResult>,
@@ -391,7 +391,7 @@ pub struct App {
     pub search: SearchState,
     pub playlists: PlaylistsState,
     pub queue: QueueViewState,
-    /// Bumped on every login and logout. Playlist jobs and their results
+    /// Bumped on every login and logout. Server requests and their results
     /// carry it so work from an earlier session is dropped.
     pub session: u64,
     /// Songs with a star toggle in flight, mapped to their value before it.
@@ -952,6 +952,21 @@ mod tests {
         assert_eq!(app.server, "https://music.example");
         assert!(app.login.password.is_empty());
         assert_eq!(app.status_text(), None);
+    }
+
+    #[test]
+    fn artists_from_an_earlier_login_are_dropped() {
+        let mut app = App::logged_in("s");
+        app.on_start();
+        let old = app.session;
+        app.show_login("s", "u");
+        app.handle_event(logged_in_event(SavedTo::Keychain));
+        assert_eq!(app.library.artists, library::Loadable::Loading);
+        app.handle_event(AppEvent::Api(ApiResult::Session {
+            session: old,
+            inner: Box::new(ApiResult::Artists(Ok(Vec::new()))),
+        }));
+        assert_eq!(app.library.artists, library::Loadable::Loading);
     }
 
     #[test]

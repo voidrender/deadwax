@@ -450,6 +450,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
         Effect::Logout => logout(app, ctx),
         Effect::LoadArtists => spawn_api(
             ctx,
+            app.session,
             |c| async move { c.get_artists().await },
             ApiResult::Artists,
         ),
@@ -457,6 +458,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             let key = id.clone();
             spawn_api(
                 ctx,
+                app.session,
                 |c| async move { c.get_artist(&id).await.map(|a| a.albums) },
                 move |result| ApiResult::Artist { id: key, result },
             );
@@ -465,17 +467,20 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             let key = id.clone();
             spawn_api(
                 ctx,
+                app.session,
                 |c| async move { c.get_album(&id).await.map(|a| a.songs) },
                 move |result| ApiResult::Album { id: key, result },
             );
         }
         Effect::LoadFavorites => spawn_api(
             ctx,
+            app.session,
             |c| async move { c.get_starred_songs().await },
             ApiResult::Favorites,
         ),
         Effect::PlayRandom(n) => spawn_api(
             ctx,
+            app.session,
             move |c| async move { c.get_random_songs(n).await },
             ApiResult::Random,
         ),
@@ -483,6 +488,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             let key = song_id.clone();
             spawn_api(
                 ctx,
+                app.session,
                 move |c| async move {
                     if starred {
                         c.star(&song_id).await
@@ -502,6 +508,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             let latest = Arc::clone(&ctx.latest_search);
             let client = current_client(&ctx.client);
             let tx = ctx.tx.clone();
+            let session = app.session;
             tokio::spawn(async move {
                 tokio::time::sleep(SEARCH_DEBOUNCE).await;
                 if latest.load(Ordering::SeqCst) != seq {
@@ -514,7 +521,10 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                         .map_err(|e| e.to_string()),
                     None => Err(NOT_LOGGED_IN.to_string()),
                 };
-                let _ = tx.send(AppEvent::Api(ApiResult::Search { seq, result }));
+                let _ = tx.send(AppEvent::Api(ApiResult::Session {
+                    session,
+                    inner: Box::new(ApiResult::Search { seq, result }),
+                }));
             });
         }
         job @ (Effect::LoadPlaylists
@@ -556,8 +566,8 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
                 tracing::warn!("saving sort orders failed: {e:#}");
             }
         }
-        Effect::AppendAlbum(id) => spawn_album_queue(ctx, id, false),
-        Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, id, true),
+        Effect::AppendAlbum(id) => spawn_album_queue(ctx, app.session, id, false),
+        Effect::PlayNextAlbum(id) => spawn_album_queue(ctx, app.session, id, true),
         Effect::LoadCover(id) => {
             let Some(client) = current_client(&ctx.client) else {
                 let _ = ctx.tx.send(AppEvent::CoverFailed { cover_id: id });
@@ -585,10 +595,12 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
 
 const NOT_LOGGED_IN: &str = "Not logged in";
 
-/// Runs one client call off the UI task and reports `wrap(result)` back.
+/// Runs one client call off the UI task and reports `wrap(result)` back,
+/// tagged with `session` so a result from an earlier login is dropped.
 /// Errors become their (URL-free) display text.
 fn spawn_api<T, F, Fut>(
     ctx: &Ctx,
+    session: u64,
     call: F,
     wrap: impl FnOnce(Result<T, String>) -> ApiResult + Send + 'static,
 ) where
@@ -603,7 +615,10 @@ fn spawn_api<T, F, Fut>(
             Some(c) => call(c).await.map_err(|e| e.to_string()),
             None => Err(NOT_LOGGED_IN.to_string()),
         };
-        let _ = tx.send(AppEvent::Api(wrap(result)));
+        let _ = tx.send(AppEvent::Api(ApiResult::Session {
+            session,
+            inner: Box::new(wrap(result)),
+        }));
     });
 }
 
@@ -815,9 +830,10 @@ async fn run_playlist_job(
     }
 }
 
-fn spawn_album_queue(ctx: &Ctx, id: String, next: bool) {
+fn spawn_album_queue(ctx: &Ctx, session: u64, id: String, next: bool) {
     spawn_api(
         ctx,
+        session,
         |c| async move { c.get_album(&id).await.map(|a| a.songs) },
         move |result| ApiResult::AlbumQueued { next, result },
     );
