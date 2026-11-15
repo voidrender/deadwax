@@ -85,7 +85,8 @@ impl Notifier for MacNotifier {
 impl MacNotifier {
     /// Runs the helper's executable directly and waits for it, so its exit
     /// code arrives. Launching through `open` would hide it. The helper
-    /// gives up after 5 seconds on its own. This blocks, so callers run it
+    /// gives up after 5 seconds on its own, or after 2 minutes while macOS
+    /// asks for permission the first time. This blocks, so callers run it
     /// on a blocking thread.
     fn launch(&self, n: &TrackNotification) -> anyhow::Result<()> {
         let exe = self.app_path.join("Contents/MacOS/DeadwaxNotifier");

@@ -60,6 +60,20 @@ let center = UNUserNotificationCenter.current()
 var exitCode: Int32 = 1
 let done = DispatchSemaphore(value: 0)
 
+// The first run shows the permission prompt, and the notification can only
+// be added once the user answers it. Give that run long enough to answer.
+// Deadwax waits for this process on a background thread, so playback
+// doesn't wait with it.
+var timeout: Double = 5
+let checked = DispatchSemaphore(value: 0)
+center.getNotificationSettings { settings in
+    if settings.authorizationStatus == .notDetermined {
+        timeout = 120
+    }
+    checked.signal()
+}
+checked.wait()
+
 center.requestAuthorization(options: [.alert]) { granted, _ in
     guard granted else {
         exitCode = 2
@@ -80,7 +94,7 @@ center.requestAuthorization(options: [.alert]) { granted, _ in
     }
 }
 
-if done.wait(timeout: .now() + 5) == .timedOut {
+if done.wait(timeout: .now() + timeout) == .timedOut {
     exitCode = 1
 }
 exit(exitCode)
