@@ -254,7 +254,6 @@ where
     if let Some(rx) = ctx.playlist_rx.take() {
         tokio::spawn(playlist_worker(
             rx,
-            ctx.client.clone(),
             Arc::clone(&ctx.session),
             ctx.tx.clone(),
         ));
@@ -540,6 +539,7 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             ctx.session.store(app.session, Ordering::SeqCst);
             let sent = ctx.playlist_tx.send(Job {
                 session: app.session,
+                client: current_client(&ctx.client),
                 effect: job,
             });
             if sent.is_err() {
@@ -622,9 +622,11 @@ fn spawn_api<T, F, Fut>(
     });
 }
 
-/// A playlist read or mutation, stamped with the session it was issued in.
+/// A playlist read or mutation, stamped with the session it was issued in
+/// and the client of that session.
 struct Job {
     session: u64,
+    client: Option<SubsonicClient>,
     effect: Effect,
 }
 
@@ -650,7 +652,6 @@ impl Job {
 /// not have, until the app's `ResyncPlaylist(X)` job comes through the queue.
 async fn playlist_worker(
     mut rx: mpsc::UnboundedReceiver<Job>,
-    client: SharedClient,
     session: Arc<AtomicU64>,
     tx: mpsc::UnboundedSender<AppEvent>,
 ) {
@@ -682,7 +683,7 @@ async fn playlist_worker(
                 result: Ok(note.to_string()),
                 id: None,
             });
-            if list_changed && let Some(c) = current_client(&client) {
+            if list_changed && let Some(c) = &job.client {
                 send(ApiResult::Playlists(
                     c.get_playlists().await.map_err(|e| e.to_string()),
                 ));
@@ -692,7 +693,7 @@ async fn playlist_worker(
         if let Effect::ResyncPlaylist(id) = &job.effect {
             fenced.remove(&(job.session, id.clone()));
         }
-        run_playlist_job(&job, &client, &send, &mut |failed_id| {
+        run_playlist_job(&job, &send, &mut |failed_id| {
             fenced.insert((job.session, failed_id.to_string()));
         })
         .await;
@@ -712,13 +713,8 @@ type JobOutcome = (
 /// The reload happens after a failure too, so the optimistic local state is
 /// corrected from the server. `on_failure` runs with the failed playlist's
 /// id before the reload is reported.
-async fn run_playlist_job(
-    job: &Job,
-    client: &SharedClient,
-    send: &impl Fn(ApiResult),
-    on_failure: &mut impl FnMut(&str),
-) {
-    let Some(c) = current_client(client) else {
+async fn run_playlist_job(job: &Job, send: &impl Fn(ApiResult), on_failure: &mut impl FnMut(&str)) {
+    let Some(c) = job.client.clone() else {
         match &job.effect {
             Effect::LoadPlaylists => send(ApiResult::Playlists(Err(NOT_LOGGED_IN.to_string()))),
             Effect::LoadPlaylist(id) | Effect::ResyncPlaylist(id) => send(ApiResult::Playlist {
@@ -1631,11 +1627,12 @@ mod tests {
     async fn run_jobs(shared: SharedClient, current: u64, jobs: Vec<Job>) -> Vec<ApiResult> {
         let (job_tx, job_rx) = mpsc::unbounded_channel();
         let (tx, mut rx) = mpsc::unbounded_channel();
-        for job in jobs {
+        for mut job in jobs {
+            job.client = job.client.or_else(|| current_client(&shared));
             job_tx.send(job).unwrap();
         }
         drop(job_tx);
-        playlist_worker(job_rx, shared, Arc::new(AtomicU64::new(current)), tx).await;
+        playlist_worker(job_rx, Arc::new(AtomicU64::new(current)), tx).await;
         let mut out = Vec::new();
         while let Ok(AppEvent::Api(ApiResult::Session { inner, .. })) = rx.try_recv() {
             out.push(*inner);
@@ -1644,7 +1641,11 @@ mod tests {
     }
 
     fn job(session: u64, effect: Effect) -> Job {
-        Job { session, effect }
+        Job {
+            session,
+            client: None,
+            effect,
+        }
     }
 
     fn remove(id: &str, index: usize) -> Effect {
@@ -1824,6 +1825,17 @@ mod tests {
                 .iter()
                 .any(|e| matches!(e, ApiResult::Playlist { result: Ok(_), .. }))
         );
+    }
+
+    #[tokio::test]
+    async fn a_job_uses_the_client_it_was_sent_with() {
+        let sent_with = playlist_server(false).await;
+        let current = playlist_server(false).await;
+        let mut delete = job(1, Effect::DeletePlaylist("pl1".into()));
+        delete.client = current_client(&shared_for(&sent_with));
+        run_jobs(shared_for(&current), 1, vec![delete]).await;
+        assert!(!paths(&sent_with).await.is_empty());
+        assert!(paths(&current).await.is_empty());
     }
 
     #[tokio::test]
