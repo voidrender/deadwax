@@ -1,0 +1,74 @@
+name: Release dry run
+
+# Builds and tests the Homebrew formula and the AUR package from the current
+# commit, the way a release does, but publishes nothing. It runs on pull
+# requests that touch the packaging, and by hand from the Actions tab.
+
+on:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - "scripts/release/**"
+      - "scripts/install-macos-notifier.sh"
+      - "macos/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-dry-run.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# An explicit bash shell turns on pipefail, so a failed download in a pipeline
+# fails the step instead of hashing partial output.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-dry-run-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  homebrew:
+    name: Test the formula (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      # Linux runners come with Homebrew installed but not on the PATH.
+      - if: runner.os == 'Linux'
+        run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
+      # The tarball mirrors GitHub's release tarball, which is git archive
+      # output under a deadwax-VERSION directory.
+      - name: Install, test and audit from a local tarball
+        run: |
+          version="$(scripts/release/check-version.sh)"
+          tarball="$RUNNER_TEMP/deadwax-$version.tar.gz"
+          git archive --format=tar.gz --prefix="deadwax-$version/" -o "$tarball" HEAD
+          sha="$(sha256sum "$tarball" 2>/dev/null || shasum -a 256 "$tarball")"
+          sha="${sha%% *}"
+          scripts/release/test-formula.sh "$version" "$sha" --tarball "$tarball"
+
+  aur:
+    name: Build the AUR package
+    runs-on: ubuntu-latest
+    container: archlinux:base-devel
+    steps:
+      - name: Install git
+        run: pacman -Syu --noconfirm --needed git
+      - uses: actions/checkout@v5
+      - name: Build from a local tarball
+        run: |
+          # The container user doesn't own the checkout.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          version="$(scripts/release/check-version.sh)"
+          tarball="/tmp/deadwax-$version.tar.gz"
+          git archive --format=tar.gz --prefix="deadwax-$version/" -o "$tarball" HEAD
+          sha="$(sha256sum "$tarball" | cut -d' ' -f1)"
+          scripts/release/build-aur.sh "$version" "$sha" /tmp/pkg --tarball "$tarball"
+          cat /tmp/pkg/.SRCINFO

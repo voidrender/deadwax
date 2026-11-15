@@ -1,0 +1,4 @@
+# Signs the app with a stable identity on macOS so rebuilds keep keychain
+# access. See scripts/macos-dev-runner.sh.
+[target.'cfg(target_os = "macos")']
+runner = "scripts/macos-dev-runner.sh"
