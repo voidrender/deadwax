@@ -25,7 +25,11 @@ jobs:
     steps:
       - uses: actions/checkout@v5
       - id: check
-        run: echo "version=$(scripts/release/check-version.sh "$GITHUB_REF_NAME")" >> "$GITHUB_OUTPUT"
+        # Assigned first, since a failed command substitution inside echo's
+        # arguments wouldn't fail the step.
+        run: |
+          version="$(scripts/release/check-version.sh "$GITHUB_REF_NAME")"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
   ci:
     name: CI
