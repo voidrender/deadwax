@@ -909,17 +909,26 @@ fn logout(app: &mut App, ctx: &Ctx) {
             .unwrap_or_default(),
     };
     set_client(&ctx.client, None);
-    app.show_login(&server, "");
+    app.show_login_after_logout(&server);
 
     let tx = ctx.tx.clone();
     let config_path = ctx.config_path.clone();
     let credentials_path = ctx.credentials_path.clone();
-    tokio::task::spawn_blocking(move || {
+    let cleanup = tokio::task::spawn_blocking(move || {
         let store = credential_store(&credentials_path);
-        let result = logout_blocking(&store, &config_path, &server, &username);
+        logout_blocking(&store, &config_path, &server, &username)
+    });
+    // The form stays locked until this arrives, so a panic must report too.
+    tokio::spawn(async move {
+        let result = cleanup.await.unwrap_or_else(|e| {
+            tracing::warn!("logout cleanup failed: {e}");
+            Err(LOGOUT_INCOMPLETE.to_string())
+        });
         let _ = tx.send(AppEvent::Api(ApiResult::LoggedOut(result)));
     });
 }
+
+const LOGOUT_INCOMPLETE: &str = "Logged out, but the saved login may not have been removed.";
 
 fn logout_blocking<S: SecretBackend>(
     store: &CredentialStore<S>,

@@ -521,6 +521,13 @@ impl App {
         };
     }
 
+    /// Shows the login form after a logout. It stays busy until the
+    /// cleanup reports back, so a new login cannot race the cleanup.
+    pub fn show_login_after_logout(&mut self, server: &str) {
+        self.show_login(server, "");
+        self.login.busy = true;
+    }
+
     pub fn set_status(&mut self, msg: impl Into<String>) {
         self.status = Some((msg.into(), Instant::now()));
     }
@@ -681,10 +688,11 @@ impl App {
                 self.login.error = Some(msg);
             }
             ApiResult::LoggedOut(result) => {
-                if let Err(msg) = result
-                    && self.screen == Screen::Login
-                {
-                    self.login.warning = Some(msg);
+                if self.screen == Screen::Login {
+                    self.login.busy = false;
+                    if let Err(msg) = result {
+                        self.login.warning = Some(msg);
+                    }
                 }
             }
             r @ ApiResult::Search { .. } => self.handle_search_result(r),
@@ -1026,6 +1034,23 @@ mod tests {
         let mut app = App::login_screen("s", "");
         app.handle_event(AppEvent::Api(ApiResult::LoggedOut(Ok(()))));
         assert_eq!(app.login.warning, None);
+    }
+
+    #[test]
+    fn login_waits_for_the_logout_cleanup() {
+        let mut app = App::logged_in("s");
+        app.show_login_after_logout("https://m.example");
+        for c in "alice".chars() {
+            press(&mut app, c);
+        }
+        press_code(&mut app, KeyCode::Tab);
+        press(&mut app, 'p');
+        assert!(press_code(&mut app, KeyCode::Enter).is_empty());
+        app.handle_event(AppEvent::Api(ApiResult::LoggedOut(Ok(()))));
+        assert!(matches!(
+            press_code(&mut app, KeyCode::Enter).as_slice(),
+            [Effect::Login { .. }]
+        ));
     }
 
     #[test]
