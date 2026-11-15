@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
     <key>CFBundleIdentifier</key>
-    <string>app.deadwax.notifier</string>
+    <string>me.overacker.deadwax-notifier</string>
     <key>CFBundleName</key>
     <string>Deadwax</string>
     <key>CFBundleDisplayName</key>
