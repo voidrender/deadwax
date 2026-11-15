@@ -73,7 +73,8 @@ The first push creates the `deadwax` package on the AUR.
 The workflow's render steps are scripts you can run yourself. Run these from the Deadwax checkout, with `TAP` and `AUR` set to your clones of the tap and the AUR repository:
 
 ```sh
-sha=$(curl -fsSL https://github.com/voidrender/deadwax/archive/refs/tags/v0.2.0.tar.gz | shasum -a 256 | cut -d' ' -f1)
+curl -fsSL -o deadwax.tar.gz https://github.com/voidrender/deadwax/archive/refs/tags/v0.2.0.tar.gz
+sha=$(shasum -a 256 deadwax.tar.gz | cut -d' ' -f1)
 scripts/release/render-formula.sh 0.2.0 "$sha" > "$TAP/Formula/deadwax.rb"
 scripts/release/render-pkgbuild.sh 0.2.0 "$sha" > "$AUR/PKGBUILD"
 (cd "$AUR" && makepkg --printsrcinfo > .SRCINFO)
