@@ -9,10 +9,15 @@ use crate::player::backend::{AudioBackend, BackendEvent, EndReason, EntryId, Loa
 use crate::player::queue::{Queue, Removed, RepeatMode};
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot, Status, UrlFor};
 use std::collections::VecDeque;
+use std::time::Duration;
 use tokio::sync::{mpsc, watch};
+use tokio::time::Instant;
 
 /// `Prev` restarts the current track instead when it has played this long.
 const PREV_RESTART_SECS: f64 = 3.0;
+/// How long mpv gets to report back a pause change the engine made. An
+/// older echo was coalesced or skipped and is dropped.
+const PAUSE_ECHO_TTL: Duration = Duration::from_secs(1);
 
 pub struct Engine<B> {
     backend: B,
@@ -43,8 +48,9 @@ pub struct Engine<B> {
     backend_dead: bool,
     /// mpv's pause state as last set by the engine or reported by mpv.
     mpv_paused: bool,
-    /// Pause changes the engine made that mpv has not reported back yet.
-    pause_echoes: VecDeque<bool>,
+    /// Pause changes the engine made that mpv has not reported back yet,
+    /// with when they were made.
+    pause_echoes: VecDeque<(bool, Instant)>,
     /// The next pause report is the initial one from a fresh process.
     skip_pause_report: bool,
     /// The queue changed since the last snapshot copied its items.
@@ -308,7 +314,15 @@ impl<B: AudioBackend> Engine<B> {
     fn pause_reported(&mut self, paused: bool, ev: &mut Vec<EngineEvent>) {
         let initial = std::mem::take(&mut self.skip_pause_report);
         self.mpv_paused = paused;
-        if let Some(at) = self.pause_echoes.iter().position(|&p| p == paused) {
+        let now = Instant::now();
+        while self
+            .pause_echoes
+            .front()
+            .is_some_and(|&(_, at)| now.duration_since(at) > PAUSE_ECHO_TTL)
+        {
+            self.pause_echoes.pop_front();
+        }
+        if let Some(at) = self.pause_echoes.iter().rposition(|&(p, _)| p == paused) {
             // mpv may coalesce rapid changes, so drop any skipped echoes too.
             self.pause_echoes.drain(..=at);
             return;
@@ -331,7 +345,7 @@ impl<B: AudioBackend> Engine<B> {
     fn pause_set(&mut self, paused: bool) {
         if paused != self.mpv_paused {
             self.mpv_paused = paused;
-            self.pause_echoes.push_back(paused);
+            self.pause_echoes.push_back((paused, Instant::now()));
         }
     }
 
@@ -1276,6 +1290,16 @@ mod tests {
         );
         assert_eq!(e.snapshot().status, Status::Playing);
         // With the echoes consumed, the next report is external again.
+        let ev = e.handle_backend(BackendEvent::Paused(true)).await;
+        assert_eq!(ev, [EngineEvent::PauseChanged(true)]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn unreported_pause_echoes_expire() {
+        let mut e = playing(3).await;
+        e.handle_command(PlayerCommand::TogglePause).await;
+        e.handle_command(PlayerCommand::TogglePause).await;
+        tokio::time::advance(Duration::from_millis(1100)).await;
         let ev = e.handle_backend(BackendEvent::Paused(true)).await;
         assert_eq!(ev, [EngineEvent::PauseChanged(true)]);
     }
