@@ -554,9 +554,9 @@ impl App {
                     }
                 }
             }
-            // The queue changed after R, so the result would undo that.
-            ApiResult::Random(_) if !self.take_random_pending() => Vec::new(),
-            ApiResult::Random(r) => match r {
+            // The queue changed after R, or a newer R is out.
+            ApiResult::Random { seq, .. } if !self.take_random_pending(seq) => Vec::new(),
+            ApiResult::Random { result, .. } => match result {
                 Ok(songs) if songs.is_empty() => {
                     self.set_status("The server returned no songs");
                     Vec::new()
@@ -941,11 +941,21 @@ mod tests {
         );
     }
 
+    fn random(seq: u64, songs: Vec<Song>) -> ApiResult {
+        ApiResult::Random {
+            seq,
+            result: Ok(songs),
+        }
+    }
+
     #[test]
     fn capital_r_plays_random_and_result_replaces_queue() {
         let mut app = App::logged_in("s");
-        assert_eq!(press(&mut app, 'R'), [Effect::PlayRandom(200)]);
-        let fx = api(&mut app, ApiResult::Random(Ok(vec![song("x")])));
+        assert_eq!(
+            press(&mut app, 'R'),
+            [Effect::PlayRandom { count: 200, seq: 1 }]
+        );
+        let fx = api(&mut app, random(1, vec![song("x")]));
         assert_eq!(
             fx,
             [Effect::Player(PlayerCommand::PlayQueue {
@@ -964,14 +974,26 @@ mod tests {
             next: false,
             result: Ok(vec![song("a")]),
         }));
-        assert!(api(&mut app, ApiResult::Random(Ok(vec![song("x")]))).is_empty());
+        assert!(api(&mut app, random(1, vec![song("x")])).is_empty());
 
         // A result with no request out is dropped too, and a fresh R works.
-        assert!(api(&mut app, ApiResult::Random(Ok(vec![song("x")]))).is_empty());
+        assert!(api(&mut app, random(1, vec![song("x")])).is_empty());
         press(&mut app, 'R');
+        assert_eq!(api(&mut app, random(2, vec![song("x")])).len(), 1);
+    }
+
+    #[test]
+    fn only_the_newest_random_request_plays() {
+        let mut app = App::logged_in("s");
+        press(&mut app, 'R');
+        press(&mut app, 'R');
+        assert!(api(&mut app, random(1, vec![song("x")])).is_empty());
         assert_eq!(
-            api(&mut app, ApiResult::Random(Ok(vec![song("x")]))).len(),
-            1
+            api(&mut app, random(2, vec![song("y")])),
+            [Effect::Player(PlayerCommand::PlayQueue {
+                songs: vec![song("y")],
+                start: 0
+            })]
         );
     }
 

@@ -477,11 +477,11 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             |c| async move { c.get_starred_songs().await },
             ApiResult::Favorites,
         ),
-        Effect::PlayRandom(n) => spawn_api(
+        Effect::PlayRandom { count, seq } => spawn_api(
             ctx,
             app.session,
-            move |c| async move { c.get_random_songs(n).await },
-            ApiResult::Random,
+            move |c| async move { c.get_random_songs(count).await },
+            move |result| ApiResult::Random { seq, result },
         ),
         Effect::ToggleStar { song_id, starred } => {
             let key = song_id.clone();

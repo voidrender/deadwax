@@ -108,7 +108,11 @@ pub enum ApiResult {
         starred: bool,
         result: Result<(), String>,
     },
-    Random(Result<Vec<Song>, String>),
+    /// Random songs for the `PlayRandom` request with this `seq`.
+    Random {
+        seq: u64,
+        result: Result<Vec<Song>, String>,
+    },
     /// An album fetched to be appended (`next` false) or played next.
     AlbumQueued {
         next: bool,
@@ -176,7 +180,11 @@ impl std::fmt::Debug for ApiResult {
                 .field("starred", starred)
                 .field("result", result)
                 .finish(),
-            Self::Random(r) => f.debug_tuple("Random").field(r).finish(),
+            Self::Random { seq, result } => f
+                .debug_struct("Random")
+                .field("seq", seq)
+                .field("result", result)
+                .finish(),
             Self::AlbumQueued { next, result } => f
                 .debug_struct("AlbumQueued")
                 .field("next", next)
@@ -251,7 +259,10 @@ pub enum Effect {
     LoadArtist(String),
     LoadAlbum(String),
     LoadFavorites,
-    PlayRandom(u32),
+    PlayRandom {
+        count: u32,
+        seq: u64,
+    },
     ToggleStar {
         song_id: String,
         starred: bool,
@@ -331,7 +342,11 @@ impl std::fmt::Debug for Effect {
             Self::LoadArtist(id) => f.debug_tuple("LoadArtist").field(id).finish(),
             Self::LoadAlbum(id) => f.debug_tuple("LoadAlbum").field(id).finish(),
             Self::LoadFavorites => f.write_str("LoadFavorites"),
-            Self::PlayRandom(n) => f.debug_tuple("PlayRandom").field(n).finish(),
+            Self::PlayRandom { count, seq } => f
+                .debug_struct("PlayRandom")
+                .field("count", count)
+                .field("seq", seq)
+                .finish(),
             Self::ToggleStar { song_id, starred } => f
                 .debug_struct("ToggleStar")
                 .field("song_id", song_id)
@@ -402,9 +417,11 @@ pub struct App {
     /// The queue item whose cover failed to load, so progress snapshots for
     /// that same track do not refetch it. The next track retries.
     cover_failed_on: Option<u64>,
-    /// A random-songs request is out and nothing has changed the queue
-    /// since. Its result only replaces the queue while this holds.
-    random_pending: bool,
+    /// The newest random-songs request, while nothing has changed the
+    /// queue since. Only its result replaces the queue.
+    random_pending: Option<u64>,
+    /// The sequence number of the last random-songs request.
+    random_seq: u64,
     pub help: bool,
     pub popup: Option<Popup>,
     /// Options from the config that the settings menu changes. The runtime
@@ -543,7 +560,7 @@ impl App {
     fn note_random(&mut self, effects: &[Effect]) {
         for effect in effects {
             match effect {
-                Effect::PlayRandom(_) => self.random_pending = true,
+                Effect::PlayRandom { seq, .. } => self.random_pending = Some(*seq),
                 Effect::Logout
                 | Effect::AppendAlbum(_)
                 | Effect::PlayNextAlbum(_)
@@ -556,16 +573,20 @@ impl App {
                     | PlayerCommand::Move { .. }
                     | PlayerCommand::Clear
                     | PlayerCommand::Restore(_),
-                ) => self.random_pending = false,
+                ) => self.random_pending = None,
                 _ => {}
             }
         }
     }
 
-    /// Takes the pending random request, if any. Its result is dropped when
-    /// this returns false.
-    pub(super) fn take_random_pending(&mut self) -> bool {
-        std::mem::take(&mut self.random_pending)
+    /// Takes the pending random request when it is `seq`. Its result is
+    /// dropped when this returns false.
+    pub(super) fn take_random_pending(&mut self, seq: u64) -> bool {
+        if self.random_pending != Some(seq) {
+            return false;
+        }
+        self.random_pending = None;
+        true
     }
 
     fn dispatch(&mut self, ev: AppEvent) -> Vec<Effect> {
@@ -795,7 +816,13 @@ impl App {
             }
             Action::ToggleStar => return self.toggle_star(),
             Action::AddToPlaylist => return self.open_picker(),
-            Action::PlayRandom => return vec![Effect::PlayRandom(RANDOM_COUNT)],
+            Action::PlayRandom => {
+                self.random_seq += 1;
+                return vec![Effect::PlayRandom {
+                    count: RANDOM_COUNT,
+                    seq: self.random_seq,
+                }];
+            }
             Action::CycleSort => return self.cycle_sort(),
             Action::ShowInfo => return self.open_info(),
             Action::ShowSettings => return self.open_settings(),
