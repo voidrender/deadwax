@@ -1203,7 +1203,12 @@ impl HubPorts for LivePorts {
         }
     }
 
+    /// Only Discord presence uses the MBID, so nothing is fetched while it
+    /// is off.
     fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>> {
+        if !self.live.discord.load(Ordering::SeqCst) {
+            return Box::pin(async { None });
+        }
         let client = current_client(&self.client);
         let id = album_id.to_string();
         Box::pin(async move {
@@ -1238,7 +1243,12 @@ impl HubPorts for LivePorts {
             .unwrap_or_default()
     }
 
+    /// Only Discord presence shows public art. While it is off, the artist
+    /// and album are not sent to the public art services.
     fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>> {
+        if !self.live.discord.load(Ordering::SeqCst) {
+            return Box::pin(async { None });
+        }
         Box::pin(async move { self.public.resolve(&q).await })
     }
 }
@@ -2171,5 +2181,43 @@ mod tests {
 
         // A stop signal ends the loop cleanly so `run` can shut mpv down.
         run_loop_until(async {}).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn public_lookups_wait_for_discord_presence() {
+        struct Silent;
+        impl Notifier for Silent {
+            fn notify(&self, _: &TrackNotification) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+        let server = wiremock::MockServer::start().await;
+        let dir = tempfile::tempdir().unwrap();
+        let endpoints = Endpoints {
+            caa: server.uri(),
+            itunes: server.uri(),
+            deezer: server.uri(),
+        };
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let ports = LivePorts {
+            client: shared_for(&server),
+            covers: dir.path().join("art"),
+            public: PublicArtResolver::new(endpoints, dir.path().join("public_art.json")),
+            notifier: Arc::new(Silent),
+            notify_failed: Arc::new(AtomicBool::new(false)),
+            presence: None,
+            live: Arc::new(LiveSettings::default()),
+            outbox: Arc::new(tokio::sync::Mutex::new(None)),
+            tx,
+        };
+        ports.live.discord.store(false, Ordering::SeqCst);
+        assert_eq!(ports.album_mbid("al1").await, None);
+        let query = ArtQuery {
+            artist: "Ar".into(),
+            album: "Al".into(),
+            release_mbid: None,
+        };
+        assert_eq!(ports.public_art(query).await, None);
+        assert!(server.received_requests().await.unwrap().is_empty());
     }
 }
