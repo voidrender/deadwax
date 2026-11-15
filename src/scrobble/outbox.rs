@@ -85,7 +85,9 @@ impl Outbox {
         let mut sent = 0;
         let mut offline = false;
         let mut kept = VecDeque::new();
-        for item in std::mem::take(&mut self.items) {
+        // The queue changes only once every send is done, so a flush that
+        // is cancelled midway keeps every entry.
+        for item in self.items.clone() {
             if item.account.is_empty() {
                 tracing::warn!(song_id = %item.song_id, "dropping scrobble with no account");
                 continue;
@@ -158,6 +160,24 @@ mod tests {
         assert_eq!(n, 0);
         let re = Outbox::open(path).unwrap();
         assert_eq!(re.items, VecDeque::from(vec![p("a", 1), p("b", 2)]));
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_flush_keeps_every_scrobble() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ob = Outbox::open(outbox_path(&dir)).unwrap();
+        ob.push(p("a", 1)).unwrap();
+        ob.push(p("b", 2)).unwrap();
+        let flush = ob.flush(ME, |s| async move {
+            if s.song_id == "a" {
+                Ok(())
+            } else {
+                std::future::pending().await
+            }
+        });
+        let timed_out = tokio::time::timeout(std::time::Duration::from_millis(10), flush).await;
+        assert!(timed_out.is_err());
+        assert_eq!(ob.items, VecDeque::from(vec![p("a", 1), p("b", 2)]));
     }
 
     #[tokio::test]
