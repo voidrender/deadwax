@@ -2,7 +2,7 @@ use super::theme;
 use ratatui::layout::{Constraint, Flex, Layout, Rect};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType};
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 /// A rounded, titled box around one list. The focused one is accented.
 pub fn pane(title: &str, focused: bool) -> Block<'static> {
@@ -24,7 +24,8 @@ pub fn display_width(s: &str) -> usize {
 
 /// `s` cut to at most `room` columns, ending in `…` when cut. A wide char
 /// that would straddle the boundary is dropped, so the result may be one
-/// column short of `room`.
+/// column short of `room`. Widths are measured on the whole string, since
+/// a sequence like `❤️` is wider than its chars added up.
 pub fn truncate(s: &str, room: usize) -> String {
     if s.width() <= room {
         return s.to_string();
@@ -33,30 +34,26 @@ pub fn truncate(s: &str, room: usize) -> String {
         return String::new();
     }
     let budget = room - 1;
-    let mut used = 0;
     let mut out = String::new();
     for c in s.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > budget {
+        out.push(c);
+        if out.width() > budget {
+            out.pop();
             break;
         }
-        used += w;
-        out.push(c);
     }
     out.push('…');
     out
 }
 
-/// The longest suffix of `s` that fits in `room` columns.
+/// The longest suffix of `s` that fits in `room` columns, measured on the
+/// whole suffix like `truncate`.
 pub fn tail(s: &str, room: usize) -> &str {
-    let mut used = 0;
     let mut start = s.len();
-    for (i, c) in s.char_indices().rev() {
-        let w = c.width().unwrap_or(0);
-        if used + w > room {
+    for (i, _) in s.char_indices().rev() {
+        if s[i..].width() > room {
             break;
         }
-        used += w;
         start = i;
     }
     &s[start..]
@@ -108,6 +105,15 @@ mod tests {
         assert_eq!(tail("ab旋律", 4), "旋律");
         assert_eq!(tail("ab旋律", 3), "律");
         assert_eq!(tail("ab旋律", 0), "");
+    }
+
+    #[test]
+    fn truncate_and_tail_measure_emoji_sequences() {
+        assert_eq!("❤️".width(), 2);
+        let cut = truncate("❤️❤️❤️abc", 4);
+        assert!(cut.width() <= 4, "{cut:?}");
+        let end = tail("abc❤️", 2);
+        assert!(end.width() <= 2, "{end:?}");
     }
 
     #[test]
