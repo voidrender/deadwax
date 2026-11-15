@@ -25,6 +25,9 @@ pub trait HubPorts: Send {
     /// lookup failed and may be tried again.
     fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>>;
     fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>>;
+    /// The login server calls go to. Album ids are only unique per server,
+    /// so cached MBIDs are kept per login.
+    fn account(&self) -> String;
     fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>>;
 
     /// Unix time in milliseconds, used to age a position when presence is
@@ -50,7 +53,8 @@ pub struct Hub<P: HubPorts> {
     tracker: ScrobbleTracker,
     current: Option<Song>,
     last_pos: f64,
-    mbids: Arc<Mutex<HashMap<String, Option<String>>>>,
+    /// Album MBIDs by login and album id.
+    mbids: Arc<Mutex<MbidCache>>,
     /// The current track has been announced.
     announced: bool,
     /// Presence state, shared with the lookup task.
@@ -60,6 +64,8 @@ pub struct Hub<P: HubPorts> {
     /// skipping through tracks does not post a notification for each one.
     settle: Duration,
 }
+
+type MbidCache = HashMap<(String, String), Option<String>>;
 
 /// The default for `Hub::settle`.
 const SETTLE: Duration = Duration::from_secs(1);
@@ -268,7 +274,7 @@ impl<P: HubPorts + Sync + 'static> Hub<P> {
 async fn lookup<P: HubPorts + Sync>(
     ports: Arc<P>,
     shown: Arc<Mutex<Shown>>,
-    mbids: Arc<Mutex<HashMap<String, Option<String>>>>,
+    mbids: Arc<Mutex<MbidCache>>,
     generation: u64,
     song: Song,
     settle: Duration,
@@ -295,11 +301,12 @@ async fn lookup<P: HubPorts + Sync>(
 
     let release_mbid = match &song.album_id {
         Some(id) => {
-            let known = lock(&mbids).get(id).cloned();
+            let key = (ports.account(), id.clone());
+            let known = lock(&mbids).get(&key).cloned();
             if let Some(m) = known {
                 m
             } else if let Some(found) = ports.album_mbid(id).await {
-                lock(&mbids).insert(id.clone(), found.clone());
+                lock(&mbids).insert(key, found.clone());
                 found
             } else {
                 None
@@ -359,6 +366,7 @@ mod tests {
         art_delay_ms: i64,
         /// How many album lookups fail before they start to succeed.
         mbid_failures: Arc<std::sync::atomic::AtomicUsize>,
+        account: Arc<Mutex<String>>,
     }
 
     impl FakePorts {
@@ -399,6 +407,9 @@ mod tests {
                 }
                 Some(p)
             })
+        }
+        fn account(&self) -> String {
+            self.account.lock().unwrap().clone()
         }
         fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>> {
             self.record(Call::PublicArt {
@@ -751,6 +762,26 @@ mod tests {
         for id in ["s1", "s2", "s3"] {
             h.on_event(
                 &EngineEvent::TrackStarted(Box::new(song(id, Some("al1")))),
+                0,
+            );
+            h.on_event(&playing(0.1), 0);
+            h.settle().await;
+        }
+        let calls = ports.take();
+        let lookups = calls
+            .iter()
+            .filter(|c| matches!(c, Call::AlbumMbid(_)))
+            .count();
+        assert_eq!(lookups, 2, "{calls:?}");
+    }
+
+    #[tokio::test]
+    async fn mbids_are_cached_per_login() {
+        let (mut h, ports) = hub();
+        for account in ["alice@a", "alice@b"] {
+            account.clone_into(&mut ports.account.lock().unwrap());
+            h.on_event(
+                &EngineEvent::TrackStarted(Box::new(song("s1", Some("al1")))),
                 0,
             );
             h.on_event(&playing(0.1), 0);

@@ -1232,6 +1232,12 @@ impl HubPorts for LivePorts {
         })
     }
 
+    fn account(&self) -> String {
+        current_client(&self.client)
+            .map(|c| account_key(&c))
+            .unwrap_or_default()
+    }
+
     fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>> {
         Box::pin(async move { self.public.resolve(&q).await })
     }
