@@ -2,13 +2,16 @@
 
 Deadwax TUI is a terminal music player for Navidrome and other Subsonic servers. It streams through mpv, shows album art in the terminal, scrobbles to your server, posts track-change notifications, and can publish a "Listening to" status on Discord. It runs on macOS and Linux.
 
+<!-- Screenshot: add assets/screenshot.png and uncomment.
+![Deadwax playing an album, with the library on the left and album art on the right](assets/screenshot.png)
+-->
+
 ## Requirements
 
-- Rust 1.90 or newer
-- mpv on your `PATH`
+- mpv on your `PATH`. Homebrew and the AUR package install it for you. Otherwise:
   - macOS: `brew install mpv`
   - Arch: `sudo pacman -S mpv`
-- A Navidrome or Subsonic-compatible server (API 1.16.1)
+- A Navidrome server, or another server that speaks Subsonic API 1.16.1 or newer
 
 Deadwax exits with an install hint if it cannot find mpv.
 
@@ -20,39 +23,37 @@ Deadwax exits with an install hint if it cannot find mpv.
 brew install voidrender/tap/deadwax
 ```
 
-The formula installs mpv as a dependency. On macOS it also builds the notification helper, so notifications work without the setup step below.
+On macOS the formula also installs the notification helper, so notifications work without extra setup.
 
 ### Arch Linux
 
-Install the `deadwax` package from the AUR with your AUR helper, for example `paru -S deadwax`.
+Install the `deadwax` package from the AUR with your AUR helper, for example `yay -S deadwax`.
 
 ### From source
 
+You need Rust 1.90 or newer.
+
 ```sh
-cargo install --path .
+cargo install --git https://github.com/voidrender/deadwax
 ```
 
-This installs the `deadwax` binary. Run `deadwax` and fill in the login screen (server URL, username, password). Use Tab and Shift+Tab to move between fields and Enter to log in.
-
-### macOS notifications
-
-macOS needs a small signed helper app to show notifications. Homebrew installs it for you. With any other install, build and install it with:
+On macOS you also need the notification helper. Build and install it from a clone of the repository:
 
 ```sh
+git clone https://github.com/voidrender/deadwax
+cd deadwax
 scripts/install-macos-notifier.sh
 ```
 
-The script compiles the helper with `swiftc`, ad-hoc signs it, and copies it to `~/Applications/DeadwaxNotifier.app`. It then launches the app once, so macOS asks for notification permission the first time. Allow it in the prompt.
-
-To build without installing, pass `--build-only`. The app is left in `target/notifier/DeadwaxNotifier.app`.
-
-Deadwax looks for the helper in this order:
-
-1. The path in `DEADWAX_NOTIFIER_APP`, when it is set.
-2. `../libexec/DeadwaxNotifier.app` relative to the `deadwax` executable, after resolving symlinks. The Homebrew formula installs it there.
-3. `~/Applications/DeadwaxNotifier.app`.
+The script compiles the helper with `swiftc`, ad-hoc signs it, and copies it to `~/Applications/DeadwaxNotifier.app`. It then launches the app once, so macOS asks for notification permission. Allow it in the prompt.
 
 On Linux, notifications go through the desktop notification service (D-Bus), so no setup is needed.
+
+## Getting started
+
+Run `deadwax` and fill in the login screen with your server URL, username, and password. Tab and Shift+Tab move between fields, and Enter logs in. Deadwax remembers the login, so later starts skip this screen.
+
+Press `?` to see the keys and `S` to open the settings.
 
 ## Credentials
 
@@ -66,7 +67,7 @@ Requests use Subsonic token auth only. Stream URLs carry credentials, so they ar
 
 ## Configuration
 
-The config file is `$XDG_CONFIG_HOME/deadwax/config.toml`, or `~/.config/deadwax/config.toml` when `XDG_CONFIG_HOME` is not set. This applies on macOS too. The login screen creates it. You can edit it by hand, and the settings menu (`S`) changes some options while Deadwax runs. The album art protocol takes effect on the next start.
+The config file is `$XDG_CONFIG_HOME/deadwax/config.toml`, or `~/.config/deadwax/config.toml` when `XDG_CONFIG_HOME` is not set. This applies on macOS too. The login screen creates it. The settings menu (`S`) changes Discord presence, notifications, and the album art protocol, and you can edit the file by hand for the rest.
 
 | Key | Default | Meaning |
 |---|---|---|
@@ -103,13 +104,13 @@ Discord only ever receives public cover art URLs, found by looking up the album 
 
 Deadwax picks the best image protocol your terminal supports, in this order: kitty graphics, iTerm2 inline images, sixel, and a half-block character fallback that works anywhere.
 
-To force a protocol, set the environment variable (it wins over `image_protocol` in the config):
+To choose one yourself, change Album art in the settings menu (`S`). The change applies on the next start. For a single run, set the environment variable instead. It wins over the setting:
 
 ```sh
 DEADWAX_IMAGE_PROTOCOL=halfblocks deadwax
 ```
 
-Accepted values are `auto`, `kitty`, `iterm2`, `sixel`, and `halfblocks`, case-insensitive. An unknown value is logged and treated as `auto`. Some terminals report a protocol they do not render well. If art looks garbled or missing, try `DEADWAX_IMAGE_PROTOCOL=halfblocks`.
+Accepted values are `auto`, `kitty`, `iterm2`, `sixel`, and `halfblocks`, case-insensitive. An unknown value is logged and treated as `auto`.
 
 ## Keys
 
@@ -131,13 +132,15 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 | `r` | Cycle repeat: off, all, one |
 | `R` | Play 200 random songs |
 | `f` | Toggle favorite on the selected song (or the current track in Now Playing) |
-| `i` | Show the cover and details of the selected song, album, artist, or playlist (or the current track in Now Playing). `i`, `Esc`, or `Enter` closes it |
-| `S` | Settings: Discord presence, notifications, and the album art protocol. `j` `k` move, `Enter` or `space` changes the selected setting, and `S` or `Esc` closes it |
+| `i` | Show the cover and details of the selection (or the current track in Now Playing) |
+| `S` | Settings |
 | `a` | Add the selected song to a playlist (picker popup) |
 | `o` | Change the sort order of the focused list (see below) |
 | `X` | Log out (asks to confirm) |
 | `q` or `Ctrl+C` | Quit |
 | `Esc` | Close a popup or leave a text input |
+
+The info popup (`i`) works on songs, albums, artists, and playlists. `i`, `Esc`, or `Enter` closes it. In the settings popup, `j` and `k` move, `Enter` or `space` changes the selected setting, and `S` or `Esc` closes it.
 
 ### Sorting
 
@@ -194,22 +197,36 @@ The log is a single file, `deadwax.log`, that is appended to and never rotated. 
 - If mpv dies mid-track, Deadwax restarts it and resumes.
 - Playback is gapless where mpv can do it.
 
-## Development
+## Troubleshooting
 
-```sh
-cargo run
-cargo test
-```
+Start with `deadwax.log` (see [Files and logs](#files-and-logs)), which records most failures with their cause.
 
-On macOS, keychain access belongs to the exact build that was granted it. Cargo gives every build a new ad-hoc signature, so without a fix macOS asks for your login password after each rebuild. To stop that, create a self-signed signing identity once:
+### No notifications
 
-```sh
-scripts/make-dev-cert.sh
-```
+Check that Notifications is On in the settings menu (`S`) and that Do Not Disturb or a Focus mode is off. A notification only appears once a track has played for a second.
 
-After that, `cargo run` signs the binary with the "Deadwax Dev" identity before starting it (see `.cargo/config.toml` and `scripts/macos-dev-runner.sh`). The script asks for your login password in the terminal, so `codesign` can use the new key without a dialog. If your keychain already holds a Deadwax password saved by a differently signed build, the first launch asks for keychain access once. Choose Always Allow. To sign with a different identity, set `DEADWAX_SIGN_IDENTITY` to its name.
+- macOS: if the status line says macOS isn't allowing them, turn on notifications for Deadwax in System Settings > Notifications. After a source install, make sure the helper is installed (see [From source](#from-source)).
+- Linux: run `notify-send test`. If nothing appears, no notification daemon is running. Window managers such as i3 and Hyprland need one, for example dunst or mako.
 
-Binaries from `cargo install` are not signed this way, so macOS asks once after each install.
+### Album art is garbled or missing
+
+Some terminals report a protocol they do not render well. Set Album art to Half-blocks in the settings menu, or run `DEADWAX_IMAGE_PROTOCOL=halfblocks deadwax`.
+
+### Nothing shows on Discord
+
+The Discord desktop app must be running on the same machine, and Discord presence must be On in the settings menu. Discord also hides it when activity sharing is off in its Activity Privacy settings. Presence clears while playback is paused.
+
+### macOS asks for keychain access after an update
+
+Keychain access belongs to the exact build that was granted it, so a new install or upgrade asks once. Choose Always Allow.
+
+### Reporting a bug
+
+Open an issue at [github.com/voidrender/deadwax/issues](https://github.com/voidrender/deadwax/issues) and include the relevant lines from `deadwax.log`.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for building, testing, and the macOS signing setup.
 
 ## License
 
