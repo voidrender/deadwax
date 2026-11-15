@@ -78,6 +78,10 @@ pub enum SavedTo {
 struct TokenFile {
     salt: String,
     token: String,
+    /// The login the token belongs to, named like the keychain entry. Files
+    /// written before this field existed have none and are not used.
+    #[serde(default)]
+    account: String,
 }
 
 pub struct CredentialStore<S: SecretBackend> {
@@ -109,7 +113,7 @@ impl<S: SecretBackend> CredentialStore<S> {
             }
             Err(SecretError::Unavailable(reason)) => {
                 tracing::warn!("keychain unavailable, using token file: {reason}");
-                self.write_file(password)?;
+                self.write_file(&account(server_url, username), password)?;
                 Ok(SavedTo::File)
             }
             Err(e) => Err(e.into()),
@@ -129,6 +133,9 @@ impl<S: SecretBackend> CredentialStore<S> {
             Err(e) => return Err(e).context("reading credentials file"),
         };
         let file: TokenFile = toml::from_str(&text).context("parsing credentials file")?;
+        if file.account.is_empty() || file.account != account(server_url, username) {
+            return Ok(None);
+        }
         Ok(Some(Auth::Token {
             token: file.token,
             salt: file.salt,
@@ -155,12 +162,16 @@ impl<S: SecretBackend> CredentialStore<S> {
         }
     }
 
-    fn write_file(&self, password: &str) -> anyhow::Result<()> {
+    fn write_file(&self, account: &str, password: &str) -> anyhow::Result<()> {
         use std::io::Write;
         use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 
         let (token, salt) = Auth::Password(password.to_owned()).params();
-        let body = toml::to_string(&TokenFile { salt, token })?;
+        let body = toml::to_string(&TokenFile {
+            salt,
+            token,
+            account: account.to_string(),
+        })?;
         if let Some(parent) = self.file_path.parent() {
             std::fs::create_dir_all(parent).context("creating config directory")?;
         }
@@ -260,6 +271,20 @@ mod tests {
             Some(Auth::Token { token, salt }) => assert_eq!(token, md5_hex(&format!("pw{salt}"))),
             other => panic!("unexpected: {other:?}"),
         }
+    }
+
+    #[test]
+    fn the_token_file_only_loads_for_its_login() {
+        let (_dir, s) = store(false);
+        s.save(URL, "me", "pw").unwrap();
+        assert!(s.load("https://other.example", "me").unwrap().is_none());
+        assert!(s.load(URL, "you").unwrap().is_none());
+        assert!(matches!(
+            s.load(URL, "me").unwrap(),
+            Some(Auth::Token { .. })
+        ));
+        std::fs::write(&s.file_path, "salt = \"a\"\ntoken = \"b\"\n").unwrap();
+        assert!(s.load(URL, "me").unwrap().is_none());
     }
 
     #[test]
