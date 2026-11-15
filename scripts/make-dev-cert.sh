@@ -57,11 +57,13 @@ openssl req -x509 -newkey rsa:2048 -nodes -days 3650 \
 # The keychain only reads PKCS#12 files with the older ciphers, and the file
 # never leaves the temporary directory.
 pass="$(openssl rand -hex 16)"
+# Expanded with the + form below, since Bash 3.2 treats an empty array as
+# unset under set -u.
 legacy=()
 if openssl pkcs12 -help 2>&1 | grep -q -- '-legacy'; then
   legacy=(-legacy)
 fi
-openssl pkcs12 -export "${legacy[@]}" -name "$name" \
+openssl pkcs12 -export ${legacy[@]+"${legacy[@]}"} -name "$name" \
   -inkey "$work/key.pem" -in "$work/cert.pem" \
   -out "$work/identity.p12" -passout "pass:$pass"
 
