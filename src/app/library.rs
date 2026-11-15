@@ -86,6 +86,8 @@ pub struct LibraryState {
     pub tracks_for: Option<String>,
     /// Album to select once the revealed artist's albums arrive.
     pending_album: Option<String>,
+    /// An artist (and album) revealed while the artist list was loading.
+    pending_reveal: Option<(String, Option<String>)>,
     pub artist_sort: ArtistSort,
     pub album_sort: AlbumSort,
     pub track_sort: TrackSort,
@@ -121,8 +123,13 @@ impl LibraryState {
     }
 
     /// Points the columns at an artist and optionally one of its albums.
-    /// Used by Search. Does nothing until the artist list has loaded.
+    /// Used by Search. While the artist list loads, the target is kept and
+    /// revealed once it arrives.
     pub fn reveal(&mut self, artist_id: &str, album_id: Option<&str>) -> Vec<Effect> {
+        if self.artists == Loadable::Loading {
+            self.pending_reveal = Some((artist_id.to_string(), album_id.map(str::to_string)));
+            return Vec::new();
+        }
         let Some(rows) = self.artists.loaded() else {
             return Vec::new();
         };
@@ -227,9 +234,16 @@ impl LibraryState {
                 sort::sort_artists(&mut rows, self.artist_sort, &self.artist_ranks);
                 self.artists = Loadable::Loaded(rows);
                 self.sel[0] = 0;
+                if let Some((artist, album)) = self.pending_reveal.take() {
+                    let effects = self.reveal(&artist, album.as_deref());
+                    if !effects.is_empty() {
+                        return Ok(effects);
+                    }
+                }
                 Ok(self.select_artist())
             }
             Err(msg) => {
+                self.pending_reveal = None;
                 self.artists = Loadable::Failed(msg.clone());
                 Err(msg)
             }

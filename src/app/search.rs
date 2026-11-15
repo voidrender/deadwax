@@ -499,6 +499,22 @@ mod tests {
     }
 
     #[test]
+    fn enter_while_artists_load_reveals_once_they_arrive() {
+        let mut app = app_with_results();
+        app.library.artists = Loadable::Loading;
+        press(&mut app, 'j');
+        assert!(key(&mut app, KeyCode::Enter).is_empty());
+        assert_eq!(app.view, View::Library);
+        let fx = api(
+            &mut app,
+            ApiResult::Artists(Ok(vec![artist("a0"), artist("a1")])),
+        );
+        assert_eq!(fx, [Effect::LoadArtist("a1".into())]);
+        let rows = app.library.artists.loaded().unwrap();
+        assert_eq!(rows[app.library.sel[0]].id(), "a1");
+    }
+
+    #[test]
     fn enter_on_album_without_artist_stays_with_a_status() {
         let mut app = app_with_results();
         press(&mut app, 'j');
