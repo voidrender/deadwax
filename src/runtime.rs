@@ -1203,12 +1203,12 @@ impl HubPorts for LivePorts {
         }
     }
 
-    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<String>> {
+    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>> {
         let client = current_client(&self.client);
         let id = album_id.to_string();
         Box::pin(async move {
             match client?.get_album(&id).await {
-                Ok(a) => a.album.music_brainz_id.filter(|m| !m.trim().is_empty()),
+                Ok(a) => Some(a.album.music_brainz_id.filter(|m| !m.trim().is_empty())),
                 Err(e) => {
                     tracing::warn!("album {id} lookup failed: {e}");
                     None

@@ -21,7 +21,9 @@ pub trait HubPorts: Send {
     fn scrobble(&self, a: ScrobbleAction);
     fn notify(&self, n: TrackNotification);
     fn presence(&self, m: PresenceMsg);
-    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<String>>;
+    /// The album's release MBID. The outer `None` means the
+    /// lookup failed and may be tried again.
+    fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>>;
     fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>>;
     fn public_art(&self, q: ArtQuery) -> BoxFuture<'_, Option<String>>;
 
@@ -296,10 +298,11 @@ async fn lookup<P: HubPorts + Sync>(
             let known = lock(&mbids).get(id).cloned();
             if let Some(m) = known {
                 m
-            } else {
-                let found = ports.album_mbid(id).await;
+            } else if let Some(found) = ports.album_mbid(id).await {
                 lock(&mbids).insert(id.clone(), found.clone());
                 found
+            } else {
+                None
             }
         }
         None => None,
@@ -354,6 +357,8 @@ mod tests {
         clock: Arc<std::sync::atomic::AtomicI64>,
         /// How far the clock moves during a public art lookup.
         art_delay_ms: i64,
+        /// How many album lookups fail before they start to succeed.
+        mbid_failures: Arc<std::sync::atomic::AtomicUsize>,
     }
 
     impl FakePorts {
@@ -375,9 +380,13 @@ mod tests {
         fn presence(&self, m: PresenceMsg) {
             self.record(Call::Presence(m));
         }
-        fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<String>> {
+        fn album_mbid(&self, album_id: &str) -> BoxFuture<'_, Option<Option<String>>> {
             self.record(Call::AlbumMbid(album_id.to_string()));
-            Box::pin(async { Some("m1".to_string()) })
+            let failed = self
+                .mbid_failures
+                .fetch_update(SeqCst, SeqCst, |n| n.checked_sub(1))
+                .is_ok();
+            Box::pin(async move { (!failed).then(|| Some("m1".to_string())) })
         }
         fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>> {
             // The private cache path is named after the server, so a leak
@@ -733,6 +742,26 @@ mod tests {
             })
             .collect();
         assert_eq!(mbids, [Some("m1".into()), Some("m1".into()), None]);
+    }
+
+    #[tokio::test]
+    async fn a_failed_mbid_lookup_is_retried() {
+        let (mut h, ports) = hub();
+        ports.mbid_failures.store(1, SeqCst);
+        for id in ["s1", "s2", "s3"] {
+            h.on_event(
+                &EngineEvent::TrackStarted(Box::new(song(id, Some("al1")))),
+                0,
+            );
+            h.on_event(&playing(0.1), 0);
+            h.settle().await;
+        }
+        let calls = ports.take();
+        let lookups = calls
+            .iter()
+            .filter(|c| matches!(c, Call::AlbumMbid(_)))
+            .count();
+        assert_eq!(lookups, 2, "{calls:?}");
     }
 
     #[tokio::test]
