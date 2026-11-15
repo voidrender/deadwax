@@ -1,7 +1,7 @@
 class Deadwax < Formula
   desc "Terminal music player for Navidrome and other Subsonic servers"
   homepage "https://github.com/voidrender/deadwax"
-  url "https://github.com/voidrender/deadwax/archive/refs/tags/v0.1.0.tar.gz"
+  url "https://github.com/voidrender/deadwax/archive/refs/tags/v1.0.0.tar.gz"
   # The release workflow fills in url and sha256 (scripts/release/render-formula.sh).
   sha256 "0000000000000000000000000000000000000000000000000000000000000000"
   license any_of: ["MIT", "Apache-2.0"]

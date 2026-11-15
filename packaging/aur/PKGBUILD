@@ -1,6 +1,6 @@
 # Maintainer: Isaac Overacker <isaac@overacker.me>
 pkgname=deadwax
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc='Terminal music player for Navidrome and other Subsonic servers'
 arch=('x86_64' 'aarch64')
