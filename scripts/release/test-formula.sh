@@ -31,9 +31,11 @@ file="$(brew --repository "$tap")/Formula/deadwax.rb"
 if [[ -n "$tarball" ]]; then
   [[ -f "$tarball" ]] || { echo "error: no tarball at $tarball" >&2; exit 1; }
   abs="$(cd "$(dirname "$tarball")" && pwd)/$(basename "$tarball")"
+  # Escape the characters sed treats specially in a replacement.
+  esc="$(printf '%s' "$abs" | sed 's/[\\&|]/\\&/g')"
   # shellcheck disable=SC2001 # Anchored to the start of one line of many.
-  sed "s|^  url \".*\"|  url \"file://$abs\"|" <<<"$formula" > "$file"
-  grep -q "^  url \"file://$abs\"" "$file" || { echo "error: url not replaced" >&2; exit 1; }
+  sed "s|^  url \".*\"|  url \"file://$esc\"|" <<<"$formula" > "$file"
+  grep -qF "  url \"file://$abs\"" "$file" || { echo "error: url not replaced" >&2; exit 1; }
 else
   printf '%s\n' "$formula" > "$file"
 fi
