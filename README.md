@@ -2,7 +2,7 @@
   <img src="assets/icon/deadwax.svg" alt="Deadwax logo" width="160">
 </p>
 
-# Deadwax TUI
+<h1 align="center">Deadwax TUI</h1>
 
 Deadwax TUI is a terminal music player for Navidrome and other Subsonic servers. It streams through mpv, shows album art in the terminal, scrobbles to your server, posts track-change notifications, and can publish a "Listening to" status on Discord. It runs on macOS and Linux.
 
