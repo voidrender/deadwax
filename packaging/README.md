@@ -17,14 +17,14 @@ The tag starts the release workflow, which:
 1. Stops if the tag doesn't match the version in `Cargo.toml`.
 2. Runs CI on the tagged commit.
 3. Creates the GitHub release with generated notes.
-4. Installs, tests and audits the formula on macOS from a local tap, then commits it to your tap.
+4. Installs, tests and audits the formula on macOS and Linux from a local tap, then commits it to your tap.
 5. Builds the AUR package in an Arch Linux container, running its tests, then pushes `PKGBUILD` and `.SRCINFO` to the AUR.
 
 Rerunning a failed job is safe. An existing release is kept, and a formula or PKGBUILD that hasn't changed isn't committed again.
 
 ## Dry run
 
-The release dry run (`.github/workflows/release-dry-run.yml`) does what a release does to the formula and the AUR package, but publishes nothing. It builds a tarball of the current commit the way GitHub does, then installs, tests and audits the formula on macOS and builds the AUR package with its `check()` on Arch Linux. It runs on pull requests that change the packaging, the release scripts, the notifier, or `Cargo.toml`, and you can start it on any branch from the Actions tab.
+The release dry run (`.github/workflows/release-dry-run.yml`) does what a release does to the formula and the AUR package, but publishes nothing. It builds a tarball of the current commit the way GitHub does, then installs, tests and audits the formula on macOS and Linux and builds the AUR package with its `check()` on Arch Linux. It runs on pull requests that change the packaging, the release scripts, the notifier, or `Cargo.toml`, and you can start it on any branch from the Actions tab.
 
 The dry run never touches the tap or the AUR, so it doesn't check the two secrets. To check them before tagging:
 

@@ -63,17 +63,23 @@ jobs:
           echo "sha256=$sha" >> "$GITHUB_OUTPUT"
           echo "Source tarball sha256: $sha"
 
-  # Installs the formula from a local tap first, so a formula that doesn't
-  # build never reaches the real tap.
+  # Installs the formula from a local tap first, on macOS and Linux, so a
+  # formula that doesn't build never reaches the real tap.
   homebrew-check:
-    name: Test the formula (macOS)
+    name: Test the formula (${{ matrix.os }})
     needs: [version, release]
-    runs-on: macos-latest
+    strategy:
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     env:
       VERSION: ${{ needs.version.outputs.version }}
       SHA256: ${{ needs.release.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v5
+      # Linux runners come with Homebrew installed but not on the PATH.
+      - if: runner.os == 'Linux'
+        run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
       - name: Install, test and audit
         run: scripts/release/test-formula.sh "$VERSION" "$SHA256"
 

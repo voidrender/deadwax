@@ -26,10 +26,17 @@ concurrency:
 
 jobs:
   homebrew:
-    name: Test the formula (macOS)
-    runs-on: macos-latest
+    name: Test the formula (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+      # Linux runners come with Homebrew installed but not on the PATH.
+      - if: runner.os == 'Linux'
+        run: echo /home/linuxbrew/.linuxbrew/bin >> "$GITHUB_PATH"
       # The tarball mirrors GitHub's release tarball, which is git archive
       # output under a deadwax-VERSION directory.
       - name: Install, test and audit from a local tarball
@@ -37,7 +44,8 @@ jobs:
           version="$(scripts/release/check-version.sh)"
           tarball="$RUNNER_TEMP/deadwax-$version.tar.gz"
           git archive --format=tar.gz --prefix="deadwax-$version/" -o "$tarball" HEAD
-          sha="$(shasum -a 256 "$tarball" | cut -d' ' -f1)"
+          sha="$(sha256sum "$tarball" 2>/dev/null || shasum -a 256 "$tarball")"
+          sha="${sha%% *}"
           scripts/release/test-formula.sh "$version" "$sha" --tarball "$tarball"
 
   aur:
