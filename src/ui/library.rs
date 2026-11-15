@@ -126,8 +126,12 @@ pub(super) fn draw_rows(
 }
 
 /// Pads `left` and `right` to exactly `width` columns, truncating `left`
-/// with an ellipsis when they do not fit.
+/// with an ellipsis when they do not fit. When both are long, `right` is
+/// cut to half the width, so the title always shows.
 pub(super) fn fit(left: &str, right: &str, width: usize) -> String {
+    let right_room = width.saturating_sub(display_width(left) + 1).max(width / 2);
+    let right = truncate(right, right_room);
+    let right = right.as_str();
     let right_len = display_width(right);
     let room = if right_len == 0 {
         width
@@ -249,6 +253,17 @@ mod tests {
         // Short wide titles pad by display width.
         let row = fit("旋律", "2:31", 20);
         assert_eq!(row.width(), 20, "{row:?}");
+    }
+
+    #[test]
+    fn fit_keeps_the_title_when_the_right_side_is_too_wide() {
+        use unicode_width::UnicodeWidthStr;
+        let row = fit("Album", &"x".repeat(30), 20);
+        assert_eq!(row.width(), 20, "{row:?}");
+        assert!(row.starts_with("Album"), "{row:?}");
+        let row = fit(&"a".repeat(30), &"x".repeat(30), 20);
+        assert_eq!(row.width(), 20, "{row:?}");
+        assert!(row.starts_with("aaaa"), "{row:?}");
     }
 
     #[test]
