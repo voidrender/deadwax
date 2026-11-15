@@ -39,6 +39,10 @@ pub struct PlaylistsState {
     /// Loads of a playlist sent before songs were added to it. Their
     /// results predate the add, so they are dropped.
     stale_loads: HashMap<String, usize>,
+    /// A reload of the shown playlist that arrived while it was still
+    /// loading and other edits were pending. It is applied once they
+    /// settle, so the playlist doesn't stay loading.
+    held_reload: Option<(String, Result<Vec<Song>, String>)>,
 }
 
 /// State of the add-to-playlist popup. Row 0 is "+ New playlist" and row
@@ -195,7 +199,15 @@ impl PlaylistsState {
     /// Applies the server's copy of a playlist after the worker changed it.
     /// Skipped while local edits are still in flight.
     fn apply_reload(&mut self, id: &str, result: Result<Vec<Song>, String>) -> Result<(), String> {
-        if self.pending > 0 || self.tracks_for.as_deref() != Some(id) {
+        if self.tracks_for.as_deref() != Some(id) {
+            return Ok(());
+        }
+        if self.pending > 0 {
+            // A loaded list already shows the pending edits, so the reload
+            // is dropped. A loading list has nothing else to show.
+            if self.tracks == Loadable::Loading {
+                self.held_reload = Some((id.to_string(), result));
+            }
             return Ok(());
         }
         match result {
@@ -623,6 +635,12 @@ impl App {
             }
             ApiResult::PlaylistMutated { result, id } => {
                 self.playlists.pending = self.playlists.pending.saturating_sub(1);
+                if self.playlists.pending == 0
+                    && let Some((held, reload)) = self.playlists.held_reload.take()
+                    && let Err(msg) = self.playlists.apply_reload(&held, reload)
+                {
+                    self.set_status(format!("Couldn't refresh the playlist: {msg}"));
+                }
                 match result {
                     Ok(msg) if msg.is_empty() => {}
                     Ok(msg) => self.set_status(msg),
@@ -782,6 +800,35 @@ mod tests {
         );
         assert_eq!(track_ids(&app), ids(&["x", "y", "new"]));
         assert_eq!(press(&mut app, 'J').len(), 1);
+    }
+
+    #[test]
+    fn a_held_reload_applies_once_other_edits_settle() {
+        let mut app = app_with_playlist();
+        app.playlists.focus = PlColumn::Lists;
+        press(&mut app, 'j');
+        let add = |app: &mut App, sel: usize| {
+            app.popup = Some(Popup::PlaylistPicker(PickerState {
+                song_ids: ids(&["new"]),
+                songs: vec![song("new")],
+                lists: app.playlists.lists.clone(),
+                sel,
+            }));
+            key(app, KeyCode::Enter)
+        };
+        assert_eq!(add(&mut app, 2).len(), 1);
+        assert_eq!(add(&mut app, 1).len(), 1);
+        api(&mut app, mutated(Ok(String::new()), Some("pl2")));
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("new")]),
+            },
+        );
+        assert_eq!(app.playlists.tracks, Loadable::Loading);
+        api(&mut app, mutated(Ok(String::new()), Some("pl1")));
+        assert_eq!(track_ids(&app), ids(&["x", "new"]));
     }
 
     #[test]
