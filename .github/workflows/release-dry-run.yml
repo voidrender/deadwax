@@ -20,6 +20,12 @@ on:
 permissions:
   contents: read
 
+# An explicit bash shell turns on pipefail, so a failed download in a pipeline
+# fails the step instead of hashing partial output.
+defaults:
+  run:
+    shell: bash
+
 concurrency:
   group: release-dry-run-${{ github.ref }}
   cancel-in-progress: true
