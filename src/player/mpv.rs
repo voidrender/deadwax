@@ -400,6 +400,8 @@ async fn watch(
             .is_err()
     {
         reader.abort();
+        // Wait for the abort to land so no event can follow `Crashed`.
+        let _ = reader.await;
     }
     if !shutdown.load(Ordering::SeqCst) {
         tracing::warn!("mpv exited unexpectedly");
