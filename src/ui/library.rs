@@ -35,7 +35,7 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
     let focused = lib.focus == col;
     let title = match col {
         Column::Artists => format!("Artists · {}", lib.artist_sort.label()),
-        Column::Albums => format!("Albums · {}", lib.album_sort.label()),
+        Column::Albums => format!("Albums · {}", lib.albums_sort().label()),
         Column::Tracks => format!("Tracks · {}", lib.track_sort.label()),
     };
     let block = pane(&title, focused);

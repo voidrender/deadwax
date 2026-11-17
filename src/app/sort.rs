@@ -120,13 +120,26 @@ impl PlaylistSort {
 }
 
 /// Every sort choice, saved to `sorts.json` in the data directory.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Sorts {
     pub artists: ArtistSort,
     pub albums: AlbumSort,
     pub tracks: TrackSort,
     pub playlists: PlaylistSort,
+    pub all_albums: AlbumSort,
+}
+
+impl Default for Sorts {
+    fn default() -> Self {
+        Self {
+            artists: ArtistSort::default(),
+            albums: AlbumSort::default(),
+            tracks: TrackSort::default(),
+            playlists: PlaylistSort::default(),
+            all_albums: AlbumSort::Name,
+        }
+    }
 }
 
 impl Sorts {
@@ -367,6 +380,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_all_albums_sort_defaults_to_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sorts.json");
+        std::fs::write(&path, b"{\"albums\":\"oldest\"}").unwrap();
+        let sorts = Sorts::load(&path);
+        assert_eq!(sorts.all_albums, AlbumSort::Name);
+        assert_eq!(sorts.albums, AlbumSort::Oldest);
+    }
+
+    #[test]
     fn sorts_round_trip_and_survive_bad_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sorts.json");
@@ -376,6 +399,7 @@ mod tests {
             albums: AlbumSort::Name,
             tracks: TrackSort::Title,
             playlists: PlaylistSort::Name,
+            all_albums: AlbumSort::Oldest,
         };
         s.save(&path).unwrap();
         assert_eq!(Sorts::load(&path), s);

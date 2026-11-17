@@ -79,7 +79,7 @@ impl Column {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LibraryState {
     pub artists: Loadable<Vec<ArtistRow>>,
     pub albums: Loadable<Vec<Album>>,
@@ -94,6 +94,8 @@ pub struct LibraryState {
     pending_reveal: Option<(String, Option<String>)>,
     pub artist_sort: ArtistSort,
     pub album_sort: AlbumSort,
+    /// Sort for the All Albums list, kept apart from `album_sort`.
+    pub all_albums_sort: AlbumSort,
     pub track_sort: TrackSort,
     /// Server order of the loaded artists and tracks, for sorts that fall
     /// back to it.
@@ -102,6 +104,29 @@ pub struct LibraryState {
     /// Every album, kept once loaded so moving past the All Albums row
     /// does not fetch the whole library again.
     all_albums: Option<Vec<Album>>,
+}
+
+impl Default for LibraryState {
+    fn default() -> Self {
+        Self {
+            artists: Loadable::default(),
+            albums: Loadable::default(),
+            tracks: Loadable::default(),
+            focus: Column::default(),
+            sel: [0; 3],
+            albums_for: None,
+            tracks_for: None,
+            pending_album: None,
+            pending_reveal: None,
+            artist_sort: ArtistSort::default(),
+            album_sort: AlbumSort::default(),
+            all_albums_sort: AlbumSort::Name,
+            track_sort: TrackSort::default(),
+            artist_ranks: HashMap::new(),
+            track_ranks: HashMap::new(),
+            all_albums: None,
+        }
+    }
 }
 
 fn favorites_album() -> Album {
@@ -153,6 +178,19 @@ impl LibraryState {
         self.select_artist()
     }
 
+    fn showing_all_albums(&self) -> bool {
+        self.albums_for.as_deref() == Some(ALL_ALBUMS_ID)
+    }
+
+    /// The sort of the albums column: All Albums has its own.
+    pub fn albums_sort(&self) -> AlbumSort {
+        if self.showing_all_albums() {
+            self.all_albums_sort
+        } else {
+            self.album_sort
+        }
+    }
+
     fn len(&self, col: Column) -> usize {
         match col {
             Column::Artists => self.artists.loaded().map_or(0, Vec::len),
@@ -200,7 +238,7 @@ impl LibraryState {
             ArtistRow::AllAlbums => {
                 self.albums_for = Some(ALL_ALBUMS_ID.to_string());
                 if let Some(mut albums) = self.all_albums.clone() {
-                    sort::sort_albums(&mut albums, self.album_sort);
+                    sort::sort_albums(&mut albums, self.all_albums_sort);
                     self.albums = Loadable::Loaded(albums);
                     return self.select_album();
                 }
@@ -282,7 +320,7 @@ impl LibraryState {
                 if id == ALL_ALBUMS_ID {
                     self.all_albums = Some(albums.clone());
                 }
-                sort::sort_albums(&mut albums, self.album_sort);
+                sort::sort_albums(&mut albums, self.albums_sort());
                 if let Some(want) = self.pending_album.take()
                     && let Some(i) = albums.iter().position(|a| a.id == want)
                 {
@@ -343,10 +381,15 @@ impl LibraryState {
                 }
             }
             Column::Albums => {
-                self.album_sort = self.album_sort.next();
+                let sort = self.albums_sort().next();
+                if self.showing_all_albums() {
+                    self.all_albums_sort = sort;
+                } else {
+                    self.album_sort = sort;
+                }
                 if let Loadable::Loaded(albums) = &mut self.albums {
                     let keep = albums.get(self.sel[col]).map(|a| a.id.clone());
-                    sort::sort_albums(albums, self.album_sort);
+                    sort::sort_albums(albums, sort);
                     self.sel[col] = position(albums, keep.as_deref(), |a| &a.id);
                 }
             }
@@ -1197,6 +1240,55 @@ mod tests {
         assert_eq!(app.library.tracks_for.as_deref(), Some("x"));
     }
 
+    /// All Albums loaded with "B" (2010) and "A" (2000), Albums focused.
+    fn all_albums_app() -> App {
+        let (mut app, _) = on_all_albums();
+        let b = Album {
+            name: "B".into(),
+            ..dated("b", 2010)
+        };
+        let a = Album {
+            name: "A".into(),
+            ..dated("a", 2000)
+        };
+        api(&mut app, all_albums(vec![b, a]));
+        app.library.focus = Column::Albums;
+        app
+    }
+
+    #[test]
+    fn all_albums_start_sorted_by_name() {
+        let app = all_albums_app();
+        assert_eq!(album_ids(&app), ["a", "b"]);
+    }
+
+    #[test]
+    fn all_albums_sort_is_separate() {
+        let mut app = all_albums_app();
+        let fx = press(&mut app, 'o');
+        assert_eq!(
+            fx,
+            [Effect::SaveSorts(Sorts {
+                all_albums: AlbumSort::Newest,
+                ..Sorts::default()
+            })]
+        );
+        assert_eq!(app.library.all_albums_sort, AlbumSort::Newest);
+        assert_eq!(app.library.album_sort, AlbumSort::Newest);
+        assert_eq!(album_ids(&app), ["b", "a"]);
+        // An artist's albums keep their own sort.
+        press(&mut app, 'h');
+        press(&mut app, 'j');
+        api(
+            &mut app,
+            ApiResult::Artist {
+                id: "a".into(),
+                result: Ok(vec![dated("x", 2000), dated("y", 2010)]),
+            },
+        );
+        assert_eq!(album_ids(&app), ["y", "x"]);
+    }
+
     #[test]
     fn revealed_album_is_found_after_sorting() {
         let mut app = dated_app();
@@ -1218,6 +1310,7 @@ mod tests {
         press(&mut app, 'o');
         app.show_login("s", "");
         assert_eq!(app.library.artist_sort, ArtistSort::MostAlbums);
+        assert_eq!(app.library.all_albums_sort, AlbumSort::Name);
         app.view = View::Queue;
         assert_eq!(press(&mut app, 'o'), []);
     }
