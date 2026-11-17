@@ -469,21 +469,27 @@ mod tests {
     #[test]
     fn enter_on_artist_reveals_in_library() {
         let mut app = app_with_results();
-        app.library.artists =
-            Loadable::Loaded(vec![ArtistRow::Favorites, ArtistRow::Artist(artist("a1"))]);
+        app.library.artists = Loadable::Loaded(vec![
+            ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
+            ArtistRow::Artist(artist("a1")),
+        ]);
         assert_eq!(
             key(&mut app, KeyCode::Enter),
             [Effect::LoadArtist("a1".into())]
         );
         assert_eq!(app.view, View::Library);
-        assert_eq!(app.library.sel[0], 1);
+        assert_eq!(app.library.sel[0], 2);
     }
 
     #[test]
     fn enter_on_album_reveals_in_library() {
         let mut app = app_with_results();
-        app.library.artists =
-            Loadable::Loaded(vec![ArtistRow::Favorites, ArtistRow::Artist(artist("a1"))]);
+        app.library.artists = Loadable::Loaded(vec![
+            ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
+            ArtistRow::Artist(artist("a1")),
+        ]);
         press(&mut app, 'j');
         let fx = key(&mut app, KeyCode::Enter);
         assert_eq!(fx, [Effect::LoadArtist("a1".into())]);
