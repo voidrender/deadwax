@@ -151,7 +151,7 @@ pub(super) fn fit(left: &str, right: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::library::ArtistRow;
+    use crate::app::library::{ALL_ALBUMS_ID, ArtistRow};
     use crate::subsonic::{Album, Artist};
     use crate::ui::testing::buffer_text;
     use ratatui::Terminal;
@@ -167,6 +167,7 @@ mod tests {
         let mut lib = LibraryState::default();
         lib.artists = Loadable::Loaded(vec![
             ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
             ArtistRow::Artist(Artist {
                 id: "a".into(),
                 name: "Boards of Canada".into(),
@@ -196,12 +197,21 @@ mod tests {
             "Artists · name",
             "Albums · newest",
             "Tracks · album order",
+            "All Albums",
             "Boards of Canada",
             "Geogaddi",
             "2002",
         ] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn all_albums_title_shows_its_own_sort() {
+        let mut lib = state();
+        lib.albums_for = Some(ALL_ALBUMS_ID.into());
+        let text = render(&lib, 100, 10);
+        assert!(text.contains("Albums · name"), "{text}");
     }
 
     #[test]
