@@ -173,16 +173,19 @@ fn by_text(a: &str, b: &str) -> Ordering {
     a.to_lowercase().cmp(&b.to_lowercase())
 }
 
-/// Sorts artist rows. Favorites stays first whatever the order.
+/// Sorts artist rows. Favorites and All Albums stay first whatever the order.
 pub(crate) fn sort_artists(
     rows: &mut [ArtistRow],
     sort: ArtistSort,
     ranks: &HashMap<String, usize>,
 ) {
     rows.sort_by(|a, b| match (a, b) {
-        (ArtistRow::Favorites, ArtistRow::Favorites) => Ordering::Equal,
-        (ArtistRow::Favorites, _) => Ordering::Less,
-        (_, ArtistRow::Favorites) => Ordering::Greater,
+        (ArtistRow::Favorites, ArtistRow::Favorites)
+        | (ArtistRow::AllAlbums, ArtistRow::AllAlbums) => Ordering::Equal,
+        (ArtistRow::Favorites, _) | (ArtistRow::AllAlbums, ArtistRow::Artist(_)) => Ordering::Less,
+        (_, ArtistRow::Favorites) | (ArtistRow::Artist(_), ArtistRow::AllAlbums) => {
+            Ordering::Greater
+        }
         (ArtistRow::Artist(a), ArtistRow::Artist(b)) => {
             let by_rank = rank_of(ranks, &a.id).cmp(&rank_of(ranks, &b.id));
             match sort {
@@ -291,16 +294,18 @@ mod tests {
     fn artists_keep_favorites_first_and_restore_server_order() {
         let mut rows = vec![
             ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
             artist("the-b", 1),
             artist("c", 5),
             artist("a", 5),
         ];
         let ranks = rank(rows.iter().map(ArtistRow::id));
         sort_artists(&mut rows, ArtistSort::MostAlbums, &ranks);
-        assert_eq!(ids(&rows, ArtistRow::id)[1..], ["c", "a", "the-b"]);
-        assert_eq!(rows[0], ArtistRow::Favorites);
+        assert_eq!(ids(&rows, ArtistRow::id)[2..], ["c", "a", "the-b"]);
+        assert_eq!(rows[..2], [ArtistRow::Favorites, ArtistRow::AllAlbums]);
         sort_artists(&mut rows, ArtistSort::Name, &ranks);
-        assert_eq!(ids(&rows, ArtistRow::id)[1..], ["the-b", "c", "a"]);
+        assert_eq!(ids(&rows, ArtistRow::id)[2..], ["the-b", "c", "a"]);
+        assert_eq!(rows[..2], [ArtistRow::Favorites, ArtistRow::AllAlbums]);
     }
 
     fn song(id: &str, title: &str, artist: &str) -> Song {

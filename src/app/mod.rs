@@ -259,6 +259,7 @@ pub enum Effect {
     LoadArtist(String),
     LoadAlbum(String),
     LoadFavorites,
+    LoadAllAlbums,
     PlayRandom {
         count: u32,
         seq: u64,
@@ -342,6 +343,7 @@ impl std::fmt::Debug for Effect {
             Self::LoadArtist(id) => f.debug_tuple("LoadArtist").field(id).finish(),
             Self::LoadAlbum(id) => f.debug_tuple("LoadAlbum").field(id).finish(),
             Self::LoadFavorites => f.write_str("LoadFavorites"),
+            Self::LoadAllAlbums => f.write_str("LoadAllAlbums"),
             Self::PlayRandom { count, seq } => f
                 .debug_struct("PlayRandom")
                 .field("count", count)

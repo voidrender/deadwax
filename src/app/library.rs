@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 /// Id of the synthetic album that holds the starred songs.
 pub const FAVORITES_ID: &str = "deadwax:favorites";
+/// Id of the synthetic artist row that lists every album.
+pub const ALL_ALBUMS_ID: &str = "deadwax:all-albums";
 /// Songs requested by the global `R` key.
 pub const RANDOM_COUNT: u32 = 200;
 
@@ -35,6 +37,7 @@ impl<T> Loadable<T> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArtistRow {
     Favorites,
+    AllAlbums,
     Artist(Artist),
 }
 
@@ -42,6 +45,7 @@ impl ArtistRow {
     pub fn id(&self) -> &str {
         match self {
             Self::Favorites => FAVORITES_ID,
+            Self::AllAlbums => ALL_ALBUMS_ID,
             Self::Artist(a) => &a.id,
         }
     }
@@ -95,6 +99,9 @@ pub struct LibraryState {
     /// back to it.
     artist_ranks: HashMap<String, usize>,
     track_ranks: HashMap<String, usize>,
+    /// Every album, kept once loaded so moving past the All Albums row
+    /// does not fetch the whole library again.
+    all_albums: Option<Vec<Album>>,
 }
 
 fn favorites_album() -> Album {
@@ -190,6 +197,16 @@ impl LibraryState {
                 self.albums = Loadable::Loaded(vec![favorites_album()]);
                 self.select_album()
             }
+            ArtistRow::AllAlbums => {
+                self.albums_for = Some(ALL_ALBUMS_ID.to_string());
+                if let Some(mut albums) = self.all_albums.clone() {
+                    sort::sort_albums(&mut albums, self.album_sort);
+                    self.albums = Loadable::Loaded(albums);
+                    return self.select_album();
+                }
+                self.albums = Loadable::Loading;
+                vec![Effect::LoadAllAlbums]
+            }
             ArtistRow::Artist(a) => {
                 self.albums_for = Some(a.id.clone());
                 self.albums = Loadable::Loading;
@@ -227,7 +244,8 @@ impl LibraryState {
         }
         match result {
             Ok(artists) => {
-                let mut rows: Vec<ArtistRow> = std::iter::once(ArtistRow::Favorites)
+                let mut rows: Vec<ArtistRow> = [ArtistRow::Favorites, ArtistRow::AllAlbums]
+                    .into_iter()
                     .chain(artists.into_iter().map(ArtistRow::Artist))
                     .collect();
                 self.artist_ranks = sort::rank(rows.iter().map(ArtistRow::id));
@@ -261,6 +279,9 @@ impl LibraryState {
         }
         match result {
             Ok(mut albums) => {
+                if id == ALL_ALBUMS_ID {
+                    self.all_albums = Some(albums.clone());
+                }
                 sort::sort_albums(&mut albums, self.album_sort);
                 if let Some(want) = self.pending_album.take()
                     && let Some(i) = albums.iter().position(|a| a.id == want)
@@ -669,6 +690,13 @@ mod tests {
         }
     }
 
+    /// Moves the selection from Favorites past All Albums to the first
+    /// artist, returning the effects of the last move.
+    fn to_first_artist(app: &mut App) -> Vec<Effect> {
+        press(app, 'j');
+        press(app, 'j')
+    }
+
     /// Artists a and b loaded, selection on a, a's albums loaded, tracks loaded.
     fn loaded_app() -> App {
         let mut app = App::logged_in("s");
@@ -677,7 +705,7 @@ mod tests {
             &mut app,
             ApiResult::Artists(Ok(vec![artist("a"), artist("b")])),
         );
-        press(&mut app, 'j'); // Favorites -> a
+        to_first_artist(&mut app);
         api(
             &mut app,
             ApiResult::Artist {
@@ -695,12 +723,68 @@ mod tests {
         app
     }
 
+    /// Artist a loaded, selection moved to the All Albums row.
+    fn on_all_albums() -> (App, Vec<Effect>) {
+        let mut app = App::logged_in("s");
+        app.on_start();
+        api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
+        let fx = press(&mut app, 'j');
+        (app, fx)
+    }
+
+    fn all_albums(albums: Vec<Album>) -> ApiResult {
+        ApiResult::Artist {
+            id: ALL_ALBUMS_ID.into(),
+            result: Ok(albums),
+        }
+    }
+
+    #[test]
+    fn all_albums_row_follows_favorites() {
+        let (app, _) = on_all_albums();
+        let rows = app.library.artists.loaded().unwrap();
+        assert_eq!(rows[0], ArtistRow::Favorites);
+        assert_eq!(rows[1], ArtistRow::AllAlbums);
+    }
+
+    #[test]
+    fn selecting_all_albums_loads_every_album() {
+        let (mut app, fx) = on_all_albums();
+        assert_eq!(fx, [Effect::LoadAllAlbums]);
+        assert_eq!(app.library.albums_for.as_deref(), Some(ALL_ALBUMS_ID));
+        let fx = api(&mut app, all_albums(vec![album("x")]));
+        assert_eq!(fx, [Effect::LoadAlbum("x".into())]);
+    }
+
+    #[test]
+    fn all_albums_is_cached() {
+        let (mut app, _) = on_all_albums();
+        api(&mut app, all_albums(vec![album("x")]));
+        assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
+        assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("x".into())]);
+        assert!(matches!(app.library.albums, Loadable::Loaded(_)));
+    }
+
+    #[test]
+    fn failed_all_albums_retries_with_l() {
+        let (mut app, _) = on_all_albums();
+        api(
+            &mut app,
+            ApiResult::Artist {
+                id: ALL_ALBUMS_ID.into(),
+                result: Err("down".into()),
+            },
+        );
+        app.library.focus = Column::Albums;
+        assert_eq!(press(&mut app, 'l'), [Effect::LoadAllAlbums]);
+    }
+
     #[test]
     fn selecting_artist_loads_albums() {
         let mut app = App::logged_in("s");
         app.on_start();
         api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
-        assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
+        assert_eq!(to_first_artist(&mut app), [Effect::LoadArtist("a".into())]);
         assert_eq!(app.library.albums, Loadable::Loading);
     }
 
@@ -709,7 +793,7 @@ mod tests {
         let mut app = App::logged_in("s");
         app.on_start();
         api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
-        press(&mut app, 'j');
+        to_first_artist(&mut app);
         let fx = api(
             &mut app,
             ApiResult::Artist {
@@ -728,7 +812,7 @@ mod tests {
             &mut app,
             ApiResult::Artists(Ok(vec![artist("a"), artist("b")])),
         );
-        press(&mut app, 'j');
+        to_first_artist(&mut app);
         assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("b".into())]);
         let fx = api(
             &mut app,
@@ -1023,7 +1107,7 @@ mod tests {
         app.help = true;
         assert!(press(&mut app, 'j').is_empty());
         assert!(!app.help);
-        assert_eq!(app.library.sel, [1, 0, 0]);
+        assert_eq!(app.library.sel, [2, 0, 0]);
     }
 
     #[test]
@@ -1041,7 +1125,7 @@ mod tests {
         let mut app = loaded_app();
         let fx = app.library.reveal("b", Some("b2"));
         assert_eq!(fx, [Effect::LoadArtist("b".into())]);
-        assert_eq!(app.library.sel[0], 2);
+        assert_eq!(app.library.sel[0], 3);
         api(
             &mut app,
             ApiResult::Artist {
@@ -1075,7 +1159,7 @@ mod tests {
         let mut app = App::logged_in("s");
         app.on_start();
         api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
-        press(&mut app, 'j');
+        to_first_artist(&mut app);
         let fx = api(
             &mut app,
             ApiResult::Artist {

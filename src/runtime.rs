@@ -1,3 +1,4 @@
+use crate::app::library::ALL_ALBUMS_ID;
 use crate::app::login::login_error_message;
 use crate::app::playlists::songs_label;
 use crate::app::search::SEARCH_LIMIT;
@@ -476,6 +477,15 @@ fn execute(effect: Effect, app: &mut App, ctx: &Ctx) {
             app.session,
             |c| async move { c.get_starred_songs().await },
             ApiResult::Favorites,
+        ),
+        Effect::LoadAllAlbums => spawn_api(
+            ctx,
+            app.session,
+            |c| async move { c.get_all_albums().await },
+            |result| ApiResult::Artist {
+                id: ALL_ALBUMS_ID.to_string(),
+                result,
+            },
         ),
         Effect::PlayRandom { count, seq } => spawn_api(
             ctx,

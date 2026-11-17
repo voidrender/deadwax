@@ -48,6 +48,7 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
     let body = match col {
         Column::Artists => body_of(&lib.artists, "No artists", |r| match r {
             ArtistRow::Favorites => ("★ Favorites".to_string(), String::new()),
+            ArtistRow::AllAlbums => ("All Albums".to_string(), String::new()),
             ArtistRow::Artist(a) => (a.name.clone(), String::new()),
         }),
         Column::Albums => body_of(&lib.albums, "No albums", |a| {
