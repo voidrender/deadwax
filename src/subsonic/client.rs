@@ -4,11 +4,15 @@ use serde::de::DeserializeOwned;
 use serde_json::Value;
 use url::Url;
 
-use super::models::{ArtistIndexes, SongList};
-use super::{AlbumWithSongs, Artist, ArtistWithAlbums, Auth, SearchResults, Song, SubsonicError};
+use super::models::{AlbumList, ArtistIndexes, SongList};
+use super::{
+    Album, AlbumWithSongs, Artist, ArtistWithAlbums, Auth, SearchResults, Song, SubsonicError,
+};
 
 const API_VERSION: &str = "1.16.1";
 const CLIENT_NAME: &str = "deadwax";
+/// Albums requested per `getAlbumList2` page. The API allows at most 500.
+pub const ALBUM_PAGE: u32 = 500;
 
 /// Async Subsonic API client. Cheap to clone.
 #[derive(Clone)]
@@ -189,6 +193,32 @@ impl SubsonicClient {
     pub async fn get_starred_songs(&self) -> Result<Vec<Song>, SubsonicError> {
         let list: SongList = self.call("getStarred2", &[], "starred2").await?;
         Ok(list.song)
+    }
+
+    /// Every album in the library, by name. Pages through `getAlbumList2`
+    /// until the server returns a short page.
+    pub async fn get_all_albums(&self) -> Result<Vec<Album>, SubsonicError> {
+        let mut albums = Vec::new();
+        let mut offset = 0;
+        loop {
+            let page: AlbumList = self
+                .call(
+                    "getAlbumList2",
+                    &[
+                        ("type", "alphabeticalByName".to_string()),
+                        ("size", ALBUM_PAGE.to_string()),
+                        ("offset", offset.to_string()),
+                    ],
+                    "albumList2",
+                )
+                .await?;
+            let len = page.album.len();
+            albums.extend(page.album);
+            if len < ALBUM_PAGE as usize {
+                return Ok(albums);
+            }
+            offset += ALBUM_PAGE;
+        }
     }
 
     pub async fn star(&self, song_id: &str) -> Result<(), SubsonicError> {
@@ -488,6 +518,52 @@ mod tests {
             .await;
         let r = client_for(&server).search("aimer", 20).await.unwrap();
         assert_eq!((r.artists.len(), r.albums.len(), r.songs.len()), (1, 2, 3));
+    }
+
+    /// A `getAlbumList2` body holding `ids` as albums.
+    fn album_page(ids: impl IntoIterator<Item = String>) -> ResponseTemplate {
+        let album: Vec<_> = ids
+            .into_iter()
+            .map(|id| json!({"id": id, "name": format!("Album {id}")}))
+            .collect();
+        ResponseTemplate::new(200).set_body_json(json!({"subsonic-response":{
+            "status":"ok","version":"1.16.1","albumList2":{"album":album}
+        }}))
+    }
+
+    async fn mount_album_page(server: &MockServer, offset: u32, page: ResponseTemplate) {
+        Mock::given(path("/rest/getAlbumList2"))
+            .and(query_param("type", "alphabeticalByName"))
+            .and(query_param("size", "500"))
+            .and(query_param("offset", offset.to_string()))
+            .respond_with(page)
+            .expect(1)
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn get_all_albums_pages_until_short_page() {
+        let server = MockServer::start().await;
+        let full = (0..ALBUM_PAGE).map(|i| format!("al-{i}"));
+        mount_album_page(&server, 0, album_page(full)).await;
+        mount_album_page(&server, 500, album_page(["last".to_string()])).await;
+        let albums = client_for(&server).get_all_albums().await.unwrap();
+        assert_eq!(albums.len(), 501);
+        assert_eq!(albums[500].id, "last");
+    }
+
+    #[tokio::test]
+    async fn get_all_albums_stops_on_empty_page() {
+        let server = MockServer::start().await;
+        let full = (0..ALBUM_PAGE).map(|i| format!("al-{i}"));
+        mount_album_page(&server, 0, album_page(full)).await;
+        let empty = ResponseTemplate::new(200).set_body_json(json!({"subsonic-response":{
+            "status":"ok","version":"1.16.1","albumList2":{}
+        }}));
+        mount_album_page(&server, 500, empty).await;
+        let albums = client_for(&server).get_all_albums().await.unwrap();
+        assert_eq!(albums.len(), 500);
     }
 
     #[tokio::test]

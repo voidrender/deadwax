@@ -118,6 +118,13 @@ pub(super) struct ArtistIndex {
     pub artist: Vec<Artist>,
 }
 
+/// Wire shape of `getAlbumList2`.
+#[derive(Deserialize)]
+pub(super) struct AlbumList {
+    #[serde(default)]
+    pub album: Vec<Album>,
+}
+
 /// Wire shape of `getRandomSongs` and `getStarred2`.
 #[derive(Deserialize)]
 pub(super) struct SongList {
