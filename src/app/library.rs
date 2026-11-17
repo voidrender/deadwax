@@ -1339,11 +1339,13 @@ mod tests {
 
     #[test]
     fn sort_choices_survive_logout_and_login() {
-        let mut app = loaded_app();
+        let mut app = all_albums_app();
+        press(&mut app, 'o');
+        app.library.focus = Column::Artists;
         press(&mut app, 'o');
         app.show_login("s", "");
         assert_eq!(app.library.artist_sort, ArtistSort::MostAlbums);
-        assert_eq!(app.library.all_albums_sort, AlbumSort::Name);
+        assert_eq!(app.library.all_albums_sort, AlbumSort::Newest);
         app.view = View::Queue;
         assert_eq!(press(&mut app, 'o'), []);
     }
