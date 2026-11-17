@@ -196,10 +196,12 @@ impl SubsonicClient {
     }
 
     /// Every album in the library, by name. Pages through `getAlbumList2`
-    /// until the server returns a short page.
+    /// until the server returns a short page, or repeats a page because it
+    /// ignores `offset`.
     pub async fn get_all_albums(&self) -> Result<Vec<Album>, SubsonicError> {
         let mut albums = Vec::new();
         let mut offset = 0;
+        let mut last_first: Option<String> = None;
         loop {
             let page: AlbumList = self
                 .call(
@@ -213,6 +215,11 @@ impl SubsonicClient {
                 )
                 .await?;
             let len = page.album.len();
+            let first = page.album.first().map(|a| a.id.clone());
+            if first.is_some() && first == last_first {
+                return Ok(albums);
+            }
+            last_first = first;
             albums.extend(page.album);
             if len < ALBUM_PAGE as usize {
                 return Ok(albums);
@@ -551,6 +558,19 @@ mod tests {
         let albums = client_for(&server).get_all_albums().await.unwrap();
         assert_eq!(albums.len(), 501);
         assert_eq!(albums[500].id, "last");
+    }
+
+    #[tokio::test]
+    async fn get_all_albums_stops_when_offset_is_ignored() {
+        let server = MockServer::start().await;
+        let full = (0..ALBUM_PAGE).map(|i| format!("al-{i}"));
+        Mock::given(path("/rest/getAlbumList2"))
+            .respond_with(album_page(full))
+            .expect(2)
+            .mount(&server)
+            .await;
+        let albums = client_for(&server).get_all_albums().await.unwrap();
+        assert_eq!(albums.len(), 500);
     }
 
     #[tokio::test]
