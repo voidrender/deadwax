@@ -241,8 +241,7 @@ impl LibraryState {
             }
             ArtistRow::AllAlbums => {
                 self.albums_for = Some(ALL_ALBUMS_ID.to_string());
-                if let Some(mut albums) = self.all_albums.clone() {
-                    sort::sort_albums(&mut albums, self.all_albums_sort);
+                if let Some(albums) = self.all_albums.clone() {
                     self.albums = Loadable::Loaded(albums);
                     return self.select_album();
                 }
@@ -321,10 +320,13 @@ impl LibraryState {
         result: Result<Vec<Album>, String>,
     ) -> Result<Vec<Effect>, String> {
         // Keep every album even if the user has moved on, so the next
-        // visit to the row needs no request.
+        // visit to the row needs no request. The copy stays in the current
+        // sort, so a visit only clones it.
+        let mut result = result;
         if id == ALL_ALBUMS_ID {
             self.all_albums_loading = false;
-            if let Ok(albums) = &result {
+            if let Ok(albums) = &mut result {
+                sort::sort_albums(albums, self.all_albums_sort);
                 self.all_albums = Some(albums.clone());
             }
         }
@@ -404,6 +406,9 @@ impl LibraryState {
                     let keep = albums.get(self.sel[col]).map(|a| a.id.clone());
                     sort::sort_albums(albums, sort);
                     self.sel[col] = position(albums, keep.as_deref(), |a| &a.id);
+                    if self.albums_for.as_deref() == Some(ALL_ALBUMS_ID) {
+                        self.all_albums = Some(albums.clone());
+                    }
                 }
             }
             Column::Tracks => {
@@ -1320,6 +1325,17 @@ mod tests {
             },
         );
         assert_eq!(album_ids(&app), ["y", "x"]);
+    }
+
+    #[test]
+    fn all_albums_keep_their_sort_when_revisited() {
+        let mut app = all_albums_app();
+        press(&mut app, 'o');
+        assert_eq!(album_ids(&app), ["b", "a"]);
+        press(&mut app, 'h');
+        press(&mut app, 'j');
+        assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("b".into())]);
+        assert_eq!(album_ids(&app), ["b", "a"]);
     }
 
     #[test]
