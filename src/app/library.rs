@@ -104,6 +104,9 @@ pub struct LibraryState {
     /// Every album, kept once loaded so moving past the All Albums row
     /// does not fetch the whole library again.
     all_albums: Option<Vec<Album>>,
+    /// Set while a `LoadAllAlbums` request is out, so selecting the row
+    /// again waits for it instead of starting another.
+    all_albums_loading: bool,
 }
 
 impl Default for LibraryState {
@@ -125,6 +128,7 @@ impl Default for LibraryState {
             artist_ranks: HashMap::new(),
             track_ranks: HashMap::new(),
             all_albums: None,
+            all_albums_loading: false,
         }
     }
 }
@@ -243,6 +247,10 @@ impl LibraryState {
                     return self.select_album();
                 }
                 self.albums = Loadable::Loading;
+                if self.all_albums_loading {
+                    return Vec::new();
+                }
+                self.all_albums_loading = true;
                 vec![Effect::LoadAllAlbums]
             }
             ArtistRow::Artist(a) => {
@@ -312,14 +320,19 @@ impl LibraryState {
         id: &str,
         result: Result<Vec<Album>, String>,
     ) -> Result<Vec<Effect>, String> {
+        // Keep every album even if the user has moved on, so the next
+        // visit to the row needs no request.
+        if id == ALL_ALBUMS_ID {
+            self.all_albums_loading = false;
+            if let Ok(albums) = &result {
+                self.all_albums = Some(albums.clone());
+            }
+        }
         if self.albums != Loadable::Loading || self.albums_for.as_deref() != Some(id) {
             return Ok(Vec::new());
         }
         match result {
             Ok(mut albums) => {
-                if id == ALL_ALBUMS_ID {
-                    self.all_albums = Some(albums.clone());
-                }
                 sort::sort_albums(&mut albums, self.albums_sort());
                 if let Some(want) = self.pending_album.take()
                     && let Some(i) = albums.iter().position(|a| a.id == want)
@@ -806,6 +819,26 @@ mod tests {
         assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
         assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("x".into())]);
         assert!(matches!(app.library.albums, Loadable::Loaded(_)));
+    }
+
+    #[test]
+    fn all_albums_arriving_after_moving_on_is_kept() {
+        let (mut app, _) = on_all_albums();
+        assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
+        api(&mut app, all_albums(vec![album("x")]));
+        assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("x".into())]);
+    }
+
+    #[test]
+    fn all_albums_in_flight_is_not_requested_again() {
+        let (mut app, _) = on_all_albums();
+        press(&mut app, 'j');
+        assert_eq!(press(&mut app, 'k'), []);
+        assert_eq!(app.library.albums, Loadable::Loading);
+        assert_eq!(
+            api(&mut app, all_albums(vec![album("x")])),
+            [Effect::LoadAlbum("x".into())]
+        );
     }
 
     #[test]
