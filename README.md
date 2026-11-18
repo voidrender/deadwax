@@ -86,6 +86,7 @@ The config file is `$XDG_CONFIG_HOME/deadwax/config.toml`, or `~/.config/deadwax
 | `server_url` | none (required) | Base URL of your server |
 | `username` | none (required) | Login name |
 | `discord` | `true` | Set to `false` to turn off Discord presence |
+| `discord_status` | `artist` | What your status in the Discord member list shows: `artist`, `album`, or `song` |
 | `notifications` | `true` | Set to `false` to turn off track-change notifications |
 | `discord_app_id` | built-in | Discord application ID. Set it to show presence under your own Discord application |
 | `discord_default_image` | `deadwax` | Name of the Discord art asset used when no public cover is found |
@@ -101,7 +102,7 @@ image_protocol = "kitty"
 
 ## Discord presence
 
-Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Deadwax Terminal" with the track, artist, album, cover, and a button that links to this repository. The Discord desktop app must be running on the same machine. Turn it off in the settings menu (`S`), or set `discord = false` in `config.toml`.
+Discord presence works out of the box. While a track plays, your status in the member list shows the artist, and your profile shows "Listening to Deadwax Terminal" with the track, artist, album, cover, and a button that links to this repository. To show the album or song title in the member list instead, set `discord_status` to `album` or `song`. With `album`, the album and artist trade places on your profile. The Discord desktop app must be running on the same machine. Turn it off in the settings menu (`S`), or set `discord = false` in `config.toml`.
 
 To show presence under a different name or default image, use your own Discord application:
 

@@ -9,6 +9,7 @@ use futures::future::BoxFuture;
 use tokio::task::JoinHandle;
 
 use crate::art::ArtQuery;
+use crate::config::DiscordStatus;
 use crate::integrations::discord::{PresenceInfo, PresenceMsg};
 use crate::integrations::notify::TrackNotification;
 use crate::player::EngineEvent;
@@ -125,6 +126,8 @@ impl Shown {
             image_url: self.image_url.clone(),
             position: self.position_at(now_ms),
             duration: song.duration,
+            // The runtime fills in the live setting on the way out.
+            status: DiscordStatus::default(),
         }))
     }
 }

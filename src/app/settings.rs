@@ -2,7 +2,7 @@
 //! app runs.
 
 use super::{App, Effect, Popup, Screen};
-use crate::config::Config;
+use crate::config::{Config, DiscordStatus};
 use crate::ui::art::{ProtocolChoice, parse_protocol};
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub discord: bool,
+    pub discord_status: DiscordStatus,
     pub notifications: bool,
     /// Applies on the next start, since detecting it means querying the
     /// terminal, which can't happen while the app reads keys.
@@ -20,6 +21,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             discord: true,
+            discord_status: DiscordStatus::default(),
             notifications: true,
             image_protocol: ProtocolChoice::Auto,
         }
@@ -30,6 +32,7 @@ impl Settings {
     pub fn from_config(c: &Config) -> Self {
         Self {
             discord: c.discord,
+            discord_status: c.discord_status,
             notifications: c.notifications,
             image_protocol: parse_protocol(c.image_protocol.as_deref()),
         }
@@ -38,6 +41,7 @@ impl Settings {
     /// Writes these options into `c`, leaving its other fields alone.
     pub fn apply_to(&self, c: &mut Config) {
         c.discord = self.discord;
+        c.discord_status = self.discord_status;
         c.notifications = self.notifications;
         c.image_protocol = protocol_value(self.image_protocol).map(str::to_string);
     }
@@ -218,11 +222,13 @@ mod tests {
         let mut c: Config = toml::from_str("server_url = \"https://x\"\nusername = \"a\"").unwrap();
         let s = Settings {
             discord: false,
+            discord_status: DiscordStatus::Song,
             notifications: false,
             image_protocol: ProtocolChoice::Iterm2,
         };
         s.apply_to(&mut c);
         assert_eq!(c.image_protocol.as_deref(), Some("iterm2"));
+        assert_eq!(c.discord_status, DiscordStatus::Song);
         assert_eq!(Settings::from_config(&c), s);
         Settings::default().apply_to(&mut c);
         assert_eq!(c.image_protocol, None);
