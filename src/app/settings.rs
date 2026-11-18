@@ -51,16 +51,23 @@ impl Settings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Discord,
+    DiscordStatus,
     Notifications,
     ImageProtocol,
 }
 
-pub const ROWS: [Row; 3] = [Row::Discord, Row::Notifications, Row::ImageProtocol];
+pub const ROWS: [Row; 4] = [
+    Row::Discord,
+    Row::DiscordStatus,
+    Row::Notifications,
+    Row::ImageProtocol,
+];
 
 impl Row {
     pub fn label(self) -> &'static str {
         match self {
             Self::Discord => "Discord presence",
+            Self::DiscordStatus => "Discord status",
             Self::Notifications => "Notifications",
             Self::ImageProtocol => "Album art",
         }
@@ -141,6 +148,7 @@ impl App {
         let s = &mut self.settings;
         match ROWS[sel] {
             Row::Discord => s.discord = !s.discord,
+            Row::DiscordStatus => s.discord_status = s.discord_status.step(forward),
             Row::Notifications => s.notifications = !s.notifications,
             Row::ImageProtocol => s.image_protocol = step_protocol(s.image_protocol, forward),
         }
@@ -192,12 +200,13 @@ mod tests {
         assert_eq!(fx, [Effect::SaveSettings(app.settings.clone())]);
 
         key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char(' '));
         assert!(!app.settings.notifications);
 
         // Other keys leave it open and change nothing.
         assert!(key(&mut app, KeyCode::Char('x')).is_empty());
-        assert_eq!(sel(&app), Some(1));
+        assert_eq!(sel(&app), Some(2));
     }
 
     #[test]
@@ -207,7 +216,8 @@ mod tests {
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
-        assert_eq!(sel(&app), Some(2));
+        key(&mut app, KeyCode::Down);
+        assert_eq!(sel(&app), Some(3));
         assert!(!app.image_protocol_pending());
         key(&mut app, KeyCode::Left);
         assert_eq!(app.settings.image_protocol, ProtocolChoice::Halfblocks);
@@ -215,6 +225,22 @@ mod tests {
         key(&mut app, KeyCode::Right);
         assert_eq!(app.settings.image_protocol, ProtocolChoice::Auto);
         assert!(!app.image_protocol_pending());
+    }
+
+    #[test]
+    fn discord_status_cycles_both_ways() {
+        let mut app = App::logged_in("s");
+        key(&mut app, KeyCode::Char('S'));
+        key(&mut app, KeyCode::Down);
+        let fx = key(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Album);
+        assert_eq!(fx, [Effect::SaveSettings(app.settings.clone())]);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Song);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Artist);
+        key(&mut app, KeyCode::Left);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Song);
     }
 
     #[test]

@@ -33,6 +33,28 @@ pub enum DiscordStatus {
 }
 
 impl DiscordStatus {
+    pub const ALL: [Self; 3] = [Self::Artist, Self::Album, Self::Song];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+            Self::Song => "Song",
+        }
+    }
+
+    /// The next choice in `ALL`, wrapping around.
+    #[must_use]
+    pub fn step(self, forward: bool) -> Self {
+        let n = Self::ALL.len();
+        let i = Self::ALL.iter().position(|&x| x == self).unwrap_or(0);
+        Self::ALL[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+
     #[expect(
         clippy::trivially_copy_pass_by_ref,
         reason = "serde's skip_serializing_if passes a reference"

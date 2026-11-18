@@ -11,7 +11,7 @@ use ratatui::widgets::{Block, BorderType, Clear, Padding, Paragraph};
 
 const WIDTH: u16 = 52;
 /// Borders, padding, the rows, a blank row and the note row.
-const HEIGHT: u16 = 2 + 2 + 3 + 1 + 1;
+const HEIGHT: u16 = 2 + 2 + 4 + 1 + 1;
 
 pub fn draw(frame: &mut Frame, area: Rect, app: &App, sel: usize) {
     let rect = centered(area, WIDTH.min(area.width), HEIGHT.min(area.height));
@@ -56,6 +56,8 @@ fn row_line(app: &App, row: Row, selected: bool, width: usize) -> Line<'static> 
     let s = &app.settings;
     let (value, on) = match row {
         Row::Discord => (on_off(s.discord), s.discord),
+        // Dimmed with presence, since it has no effect while presence is off.
+        Row::DiscordStatus => (s.discord_status.label(), s.discord),
         Row::Notifications => (on_off(s.notifications), s.notifications),
         Row::ImageProtocol => (protocol_label(s.image_protocol), true),
     };
@@ -110,6 +112,7 @@ mod tests {
                 .to_string()
         };
         assert!(line("Discord presence").contains("On"), "{text}");
+        assert!(line("Discord status").contains("Artist"), "{text}");
         assert!(line("Notifications").contains("Off"), "{text}");
         assert!(line("Album art").contains("Auto"), "{text}");
         assert!(!text.contains("next start"), "{text}");
@@ -119,7 +122,7 @@ mod tests {
     fn a_changed_album_art_setting_says_it_needs_a_restart() {
         let mut app = App::logged_in("s");
         app.settings.image_protocol = ProtocolChoice::Halfblocks;
-        app.popup = Some(Popup::Settings { sel: 2 });
+        app.popup = Some(Popup::Settings { sel: 3 });
         let text = render(&mut app, 80, 24);
         assert!(text.contains("Half-blocks"), "{text}");
         assert!(text.contains("next start"), "{text}");
