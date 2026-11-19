@@ -1,6 +1,7 @@
 use super::theme;
 use super::widgets::{display_width, format_duration, pane, truncate};
 use crate::app::library::{ArtistRow, Column, LibraryState, Loadable};
+use crate::app::mouse::{HitMap, List, Target};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
@@ -9,7 +10,7 @@ use ratatui::widgets::{Paragraph, Wrap};
 /// Below this width only the focused column and its parent are shown.
 const WIDE: u16 = 80;
 
-pub fn draw(frame: &mut Frame, area: Rect, lib: &LibraryState) {
+pub fn draw(frame: &mut Frame, area: Rect, lib: &LibraryState, hits: &mut HitMap) {
     let cols: &[Column] = if area.width >= WIDE {
         &[Column::Artists, Column::Albums, Column::Tracks]
     } else {
@@ -27,11 +28,13 @@ pub fn draw(frame: &mut Frame, area: Rect, lib: &LibraryState) {
         .collect();
     let rects = Layout::horizontal(weights).split(area);
     for (col, rect) in cols.iter().zip(rects.iter()) {
-        draw_column(frame, *rect, lib, *col);
+        draw_column(frame, *rect, lib, *col, hits);
     }
 }
 
-fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
+fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column, hits: &mut HitMap) {
+    let list = List::Library(col);
+    hits.add(area, Target::Pane(list));
     let focused = lib.focus == col;
     let title = match col {
         Column::Artists => format!("Artists · {}", lib.artist_sort.label()),
@@ -66,7 +69,7 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
         }),
     };
     match body {
-        Body::Rows(rows) => draw_rows(frame, inner, &rows, sel, focused),
+        Body::Rows(rows) => draw_rows(frame, inner, &rows, sel, focused, list, hits),
         Body::Message(lines) => {
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
         }
@@ -98,17 +101,21 @@ pub(super) fn body_of<T>(
     }
 }
 
+/// Draws the rows of `list` that fit, scrolled to show `sel`, and records
+/// them for clicks.
 pub(super) fn draw_rows(
     frame: &mut Frame,
     area: Rect,
     rows: &[(String, String)],
     sel: usize,
     focused: bool,
+    list: List,
+    hits: &mut HitMap,
 ) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = sel.min(rows.len().saturating_sub(1));
-    let offset = (sel + 1).saturating_sub(height);
+    let offset = hits.scroll(list, sel, rows.len(), height);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -124,6 +131,13 @@ pub(super) fn draw_rows(
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+    hits.add(
+        area,
+        Target::Rows {
+            list,
+            first: offset,
+        },
+    );
 }
 
 /// Pads `left` and `right` to exactly `width` columns, truncating `left`
@@ -159,7 +173,8 @@ mod tests {
 
     fn render(lib: &LibraryState, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), lib)).unwrap();
+        term.draw(|f| draw(f, f.area(), lib, &mut HitMap::default()))
+            .unwrap();
         buffer_text(term.backend().buffer())
     }
 
@@ -281,8 +296,18 @@ mod tests {
     fn wide_title_row_keeps_duration_on_screen() {
         let rows = vec![("旋律のテスト曲名".to_string(), "2:31".to_string())];
         let mut term = Terminal::new(TestBackend::new(20, 1)).unwrap();
-        term.draw(|f| draw_rows(f, f.area(), &rows, 0, false))
-            .unwrap();
+        term.draw(|f| {
+            draw_rows(
+                f,
+                f.area(),
+                &rows,
+                0,
+                false,
+                List::Search,
+                &mut HitMap::default(),
+            );
+        })
+        .unwrap();
         let text = buffer_text(term.backend().buffer());
         assert!(text.trim_end().ends_with("2:31"), "{text}");
     }

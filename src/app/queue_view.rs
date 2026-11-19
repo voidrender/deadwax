@@ -38,10 +38,12 @@ impl QueueViewState {
     }
 
     fn move_selection(&mut self, items: &[QueueItem], delta: isize) {
-        self.sel = self
-            .sel
-            .saturating_add_signed(delta)
-            .min(items.len().saturating_sub(1));
+        self.select(items, self.sel.saturating_add_signed(delta));
+    }
+
+    /// Selects item `index`, or the last item.
+    pub(super) fn select(&mut self, items: &[QueueItem], index: usize) {
+        self.sel = index.min(items.len().saturating_sub(1));
         self.anchor = items.get(self.sel).map(|i| i.uid);
     }
 }

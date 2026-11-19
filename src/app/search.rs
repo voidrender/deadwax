@@ -157,6 +157,16 @@ impl SearchState {
         }
     }
 
+    /// A click on the results. Stops typing, and selects `row` when it is
+    /// a result rather than a header.
+    pub(super) fn click(&mut self, row: Option<usize>) {
+        self.editing = false;
+        match row {
+            Some(row) if self.rows().get(row).is_some_and(|r| r.selectable()) => self.sel = row,
+            _ => self.snap_selection(),
+        }
+    }
+
     fn move_selection(&mut self, delta: isize) {
         let rows = self.rows();
         let mut i = self.sel;

@@ -2,6 +2,7 @@ use super::library::fit;
 use super::theme;
 use super::widgets::{format_duration, pane};
 use crate::app::App;
+use crate::app::mouse::{HitMap, List, Target};
 use crate::app::playlists::songs_label;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -11,7 +12,7 @@ use ratatui::widgets::Paragraph;
 /// Width of the "▶ " marker column.
 const MARK: usize = 2;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let items = &app.player.items;
     let block = pane(&format!("Queue · {}", songs_label(items.len())), true);
     let area = {
@@ -32,7 +33,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = app.queue.sel.min(items.len() - 1);
-    let offset = (sel + 1).saturating_sub(height);
+    let offset = hits.scroll(List::Queue, sel, items.len(), height);
     let lines: Vec<Line> = items
         .iter()
         .enumerate()
@@ -56,6 +57,13 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+    hits.add(
+        area,
+        Target::Rows {
+            list: List::Queue,
+            first: offset,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -92,7 +100,8 @@ mod tests {
 
     fn render(app: &App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), app)).unwrap();
+        term.draw(|f| draw(f, f.area(), app, &mut HitMap::default()))
+            .unwrap();
         buffer_text(term.backend().buffer())
     }
 

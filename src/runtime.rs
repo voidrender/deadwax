@@ -18,7 +18,7 @@ use crate::scrobble::{Outbox, PendingScrobble, ScrobbleAction};
 use crate::subsonic::{Auth, SubsonicClient, SubsonicError};
 use crate::ui;
 use crate::ui::art::ResizeJob;
-use crossterm::event::{Event, EventStream};
+use crossterm::event::{Event, EventStream, MouseEventKind};
 use futures::future::BoxFuture;
 use futures::{Stream, StreamExt};
 use image::DynamicImage;
@@ -361,6 +361,9 @@ where
         let ev = tokio::select! {
             term = input.next() => match term {
                 Some(Ok(Event::Key(key))) => AppEvent::Key(key),
+                // Moves, drags, releases and the wheel would only redraw an
+                // unchanged frame.
+                Some(Ok(Event::Mouse(m))) if matches!(m.kind, MouseEventKind::Down(_)) => AppEvent::Mouse(m),
                 Some(Ok(Event::Resize(..))) => AppEvent::Resize,
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(e.into()),

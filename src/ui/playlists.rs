@@ -2,6 +2,7 @@ use super::library::{Body, body_of, draw_rows};
 use super::theme;
 use super::widgets::{centered, format_duration, pane, tail};
 use crate::app::library::Loadable;
+use crate::app::mouse::{HitMap, List, Target};
 use crate::app::playlists::{PickerState, PlColumn, PlaylistsState, songs_label};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -15,7 +16,7 @@ const POPUP_WIDTH: u16 = 44;
 /// Most picker rows shown at once.
 const PICKER_ROWS: u16 = 10;
 
-pub fn draw(frame: &mut Frame, area: Rect, pl: &PlaylistsState) {
+pub fn draw(frame: &mut Frame, area: Rect, pl: &PlaylistsState, hits: &mut HitMap) {
     let cols: &[PlColumn] = if area.width >= WIDE {
         &[PlColumn::Lists, PlColumn::Tracks]
     } else if pl.focus == PlColumn::Lists {
@@ -32,11 +33,19 @@ pub fn draw(frame: &mut Frame, area: Rect, pl: &PlaylistsState) {
         .collect();
     let rects = Layout::horizontal(weights).split(area);
     for (col, rect) in cols.iter().zip(rects.iter()) {
-        draw_column(frame, *rect, pl, *col);
+        draw_column(frame, *rect, pl, *col, hits);
     }
 }
 
-fn draw_column(frame: &mut Frame, area: Rect, pl: &PlaylistsState, col: PlColumn) {
+fn draw_column(
+    frame: &mut Frame,
+    area: Rect,
+    pl: &PlaylistsState,
+    col: PlColumn,
+    hits: &mut HitMap,
+) {
+    let list = List::Playlists(col);
+    hits.add(area, Target::Pane(list));
     let focused = pl.focus == col;
     let title = match col {
         PlColumn::Lists => format!("Playlists · {}", pl.list_sort.label()),
@@ -61,7 +70,15 @@ fn draw_column(frame: &mut Frame, area: Rect, pl: &PlaylistsState, col: PlColumn
         }),
     };
     match body {
-        Body::Rows(rows) => draw_rows(frame, inner, &rows, pl.sel[col.index()], focused),
+        Body::Rows(rows) => draw_rows(
+            frame,
+            inner,
+            &rows,
+            pl.sel[col.index()],
+            focused,
+            list,
+            hits,
+        ),
         Body::Message(lines) => {
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
         }
@@ -94,7 +111,7 @@ pub fn draw_text_input(frame: &mut Frame, area: Rect, title: &str, value: &str) 
     frame.render_widget(Paragraph::new(body).block(popup_block(title)), rect);
 }
 
-pub fn draw_picker(frame: &mut Frame, area: Rect, picker: &PickerState) {
+pub fn draw_picker(frame: &mut Frame, area: Rect, picker: &PickerState, hits: &mut HitMap) {
     let mut rows = vec![("+ New playlist".to_string(), String::new())];
     match &picker.lists {
         Loadable::Loaded(lists) => {
@@ -122,7 +139,7 @@ pub fn draw_picker(frame: &mut Frame, area: Rect, picker: &PickerState) {
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
     if !inner.is_empty() {
-        draw_rows(frame, inner, &rows, picker.sel, true);
+        draw_rows(frame, inner, &rows, picker.sel, true, List::Picker, hits);
     }
 }
 
@@ -175,7 +192,7 @@ mod tests {
         let mut pl = PlaylistsState::default();
         pl.lists = Loadable::Loaded(vec![playlist("Road Trip")]);
         pl.tracks = Loadable::Loaded(vec![song("Roygbiv")]);
-        let text = render(|f| draw(f, f.area(), &pl), 90, 8);
+        let text = render(|f| draw(f, f.area(), &pl, &mut HitMap::default()), 90, 8);
         for want in ["Playlists", "Road Trip", "Roygbiv", "2:05", "♥"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
@@ -189,7 +206,11 @@ mod tests {
             lists: Loadable::Loaded(vec![playlist("Mix")]),
             sel: 0,
         };
-        let text = render(|f| draw_picker(f, f.area(), &picker), 60, 12);
+        let text = render(
+            |f| draw_picker(f, f.area(), &picker, &mut HitMap::default()),
+            60,
+            12,
+        );
         assert!(text.contains("Add 2 songs to"), "{text}");
         let new = text.find("+ New playlist").expect("new row");
         let mix = text.find("Mix").expect("mix row");

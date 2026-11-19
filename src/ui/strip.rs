@@ -2,6 +2,7 @@ use super::art::Slot;
 use super::theme;
 use super::widgets::format_duration;
 use crate::app::App;
+use crate::app::mouse::{HitMap, Target};
 use crate::player::queue::RepeatMode;
 use crate::player::{PlayerSnapshot, Status};
 use ratatui::Frame;
@@ -17,7 +18,8 @@ pub const ART_WIDTH: u16 = 6;
 /// stay together on wide terminals instead of stretching edge to edge.
 pub const MAX_PROGRESS_WIDTH: u16 = 80;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, hits: &mut HitMap) {
+    hits.add(area, Target::NowPlaying);
     // On wide terminals the art, bar, and indicators sit together in the
     // middle instead of hugging the left edge.
     let content = ART_WIDTH + 1 + MAX_PROGRESS_WIDTH;
@@ -177,7 +179,8 @@ mod tests {
         app.player = snap();
         let mut term =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(60, HEIGHT)).unwrap();
-        term.draw(|f| draw(f, f.area(), &mut app)).unwrap();
+        term.draw(|f| draw(f, f.area(), &mut app, &mut HitMap::default()))
+            .unwrap();
         let text = buffer_text(term.backend().buffer());
         let rows: Vec<&str> = text.lines().collect();
         let col = |row: &str, needle: &str| row.chars().position(|c| needle.starts_with(c));
@@ -197,7 +200,8 @@ mod tests {
         app.player = snap();
         let mut term =
             ratatui::Terminal::new(ratatui::backend::TestBackend::new(200, HEIGHT)).unwrap();
-        term.draw(|f| draw(f, f.area(), &mut app)).unwrap();
+        term.draw(|f| draw(f, f.area(), &mut app, &mut HitMap::default()))
+            .unwrap();
         let text = buffer_text(term.backend().buffer());
         let rows: Vec<Vec<char>> = text.lines().map(|r| r.chars().collect()).collect();
         let content = usize::from(ART_WIDTH + 1 + MAX_PROGRESS_WIDTH);
