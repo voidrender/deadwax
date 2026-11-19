@@ -70,7 +70,9 @@ fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut 
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = search.sel.min(rows.len() - 1);
-    let offset = hits.scroll(List::Search, sel, rows.len(), height);
+    // A header right over the selection scrolls into view with it.
+    let header = usize::from(sel > 0 && matches!(rows[sel - 1], SearchRow::Header(_)));
+    let offset = hits.scroll_showing(List::Search, sel, header, rows.len(), height);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()

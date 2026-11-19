@@ -94,12 +94,26 @@ impl HitMap {
     /// position, and scrolls only as far as it takes to show `sel` after
     /// the selection, the rows or the height change.
     pub fn scroll(&mut self, list: List, sel: usize, len: usize, height: usize) -> usize {
+        self.scroll_showing(list, sel, 0, len, height)
+    }
+
+    /// Like `scroll`, but scrolling up to the selection also shows the
+    /// `above` rows over it, such as a section header.
+    pub fn scroll_showing(
+        &mut self,
+        list: List,
+        sel: usize,
+        above: usize,
+        len: usize,
+        height: usize,
+    ) -> usize {
+        let top = sel.saturating_sub(above.min(height.saturating_sub(1)));
         let last = self.scrolls.get(&list).copied();
         let mut offset = last.map_or(0, |s| s.offset);
         let moved = last.is_none_or(|s| s.sel != sel || s.len != len || s.height != height);
         if moved {
-            if sel < offset {
-                offset = sel;
+            if top < offset {
+                offset = top;
             } else if sel >= offset + height {
                 offset = (sel + 1).saturating_sub(height);
             }
@@ -592,6 +606,37 @@ mod tests {
         // Fewer rows pull the view back so it stays full.
         assert_eq!(hits.scroll(list, 2, 20, 10), 2);
         assert_eq!(hits.scroll(list, 0, 5, 10), 0);
+    }
+
+    #[test]
+    fn moving_up_to_the_first_result_shows_its_header() {
+        let mut app = library_app();
+        app.view = View::Search;
+        app.search.input = "song".into();
+        app.search.seq = 1;
+        app.search.apply(
+            1,
+            Ok(crate::subsonic::SearchResults {
+                songs: (0..60).map(|i| song(&i.to_string())).collect(),
+                ..Default::default()
+            }),
+        );
+        let header = row_of(&mut app, "Songs").unwrap();
+        let press = |app: &mut App, c| {
+            app.handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char(c),
+                KeyModifiers::NONE,
+            )));
+            draw(app);
+        };
+        for _ in 0..50 {
+            press(&mut app, 'j');
+        }
+        assert_eq!(row_of(&mut app, "Songs"), None);
+        for _ in 0..50 {
+            press(&mut app, 'k');
+        }
+        assert_eq!(row_of(&mut app, "Songs"), Some(header));
     }
 
     #[test]
