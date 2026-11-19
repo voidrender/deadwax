@@ -12,6 +12,7 @@ use crate::player::PlayerCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::time::{Duration, Instant};
 
 /// Longest gap between the two clicks of a double click.
@@ -58,6 +59,18 @@ struct Scroll {
     sel: usize,
     len: usize,
     height: usize,
+    /// The `fingerprint` of the rows.
+    content: u64,
+}
+
+/// A hash of a list's rows. A list replaced by one of the same length
+/// still gets a new fingerprint.
+pub fn fingerprint<T: Hash>(rows: impl IntoIterator<Item = T>) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    for row in rows {
+        row.hash(&mut hasher);
+    }
+    hasher.finish()
 }
 
 /// The clickable areas of the last frame, in drawing order, and the scroll
@@ -90,11 +103,19 @@ impl HitMap {
             .copied()
     }
 
-    /// The index of the top row to draw for `list`. The list keeps its last
-    /// position, and scrolls only as far as it takes to show `sel` after
-    /// the selection, the rows or the height change.
-    pub fn scroll(&mut self, list: List, sel: usize, len: usize, height: usize) -> usize {
-        self.scroll_showing(list, sel, 0, len, height)
+    /// The index of the top row to draw for `list`, whose rows have the
+    /// fingerprint `content`. The list keeps its last position, and scrolls
+    /// only as far as it takes to show `sel` after the selection, the rows
+    /// or the height change.
+    pub fn scroll(
+        &mut self,
+        list: List,
+        sel: usize,
+        len: usize,
+        height: usize,
+        content: u64,
+    ) -> usize {
+        self.scroll_showing(list, sel, 0, len, height, content)
     }
 
     /// Like `scroll`, but scrolling up to the selection also shows the
@@ -106,11 +127,14 @@ impl HitMap {
         above: usize,
         len: usize,
         height: usize,
+        content: u64,
     ) -> usize {
         let top = sel.saturating_sub(above.min(height.saturating_sub(1)));
         let last = self.scrolls.get(&list).copied();
         let mut offset = last.map_or(0, |s| s.offset);
-        let moved = last.is_none_or(|s| s.sel != sel || s.len != len || s.height != height);
+        let moved = last.is_none_or(|s| {
+            s.sel != sel || s.len != len || s.height != height || s.content != content
+        });
         if moved {
             if top < offset {
                 offset = top;
@@ -126,6 +150,7 @@ impl HitMap {
                 sel,
                 len,
                 height,
+                content,
             },
         );
         offset
@@ -597,15 +622,40 @@ mod tests {
     fn scroll_shows_the_selection_and_otherwise_stays() {
         let mut hits = HitMap::default();
         let list = List::Queue;
-        assert_eq!(hits.scroll(list, 0, 50, 10), 0);
-        assert_eq!(hits.scroll(list, 15, 50, 10), 6);
-        assert_eq!(hits.scroll(list, 8, 50, 10), 6);
-        assert_eq!(hits.scroll(list, 2, 50, 10), 2);
+        assert_eq!(hits.scroll(list, 0, 50, 10, 1), 0);
+        assert_eq!(hits.scroll(list, 15, 50, 10, 1), 6);
+        assert_eq!(hits.scroll(list, 8, 50, 10, 1), 6);
+        assert_eq!(hits.scroll(list, 2, 50, 10, 1), 2);
         hits.scroll_by(list, 100);
-        assert_eq!(hits.scroll(list, 2, 50, 10), 40);
+        assert_eq!(hits.scroll(list, 2, 50, 10, 1), 40);
+        // New rows of the same length bring the selection back into view.
+        assert_eq!(hits.scroll(list, 2, 50, 10, 2), 2);
         // Fewer rows pull the view back so it stays full.
-        assert_eq!(hits.scroll(list, 2, 20, 10), 2);
-        assert_eq!(hits.scroll(list, 0, 5, 10), 0);
+        assert_eq!(hits.scroll(list, 2, 20, 10, 2), 2);
+        assert_eq!(hits.scroll(list, 0, 5, 10, 2), 0);
+    }
+
+    #[test]
+    fn new_search_results_start_at_the_top_after_scrolling() {
+        let mut app = library_app();
+        app.view = View::Search;
+        app.search.input = "song".into();
+        let results = |prefix: &str| crate::subsonic::SearchResults {
+            songs: (0..100).map(|i| song(&format!("{prefix}{i}"))).collect(),
+            ..Default::default()
+        };
+        app.search.seq = 1;
+        app.search.apply(1, Ok(results("a")));
+        let top = row_of(&mut app, "Song a0 ").unwrap();
+        let y = u16::try_from(top).unwrap();
+        for _ in 0..10 {
+            mouse(&mut app, MouseEventKind::ScrollDown, 5, y);
+        }
+        assert_eq!(row_of(&mut app, "Song a0 "), None);
+        // Same length and selection, different songs.
+        app.search.seq = 2;
+        app.search.apply(2, Ok(results("b")));
+        assert_eq!(row_of(&mut app, "Song b0 "), Some(top));
     }
 
     #[test]

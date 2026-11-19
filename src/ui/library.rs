@@ -1,7 +1,7 @@
 use super::theme;
 use super::widgets::{display_width, format_duration, pane, truncate};
 use crate::app::library::{ArtistRow, Column, LibraryState, Loadable};
-use crate::app::mouse::{HitMap, List, Target};
+use crate::app::mouse::{HitMap, List, Target, fingerprint};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
@@ -115,7 +115,7 @@ pub(super) fn draw_rows(
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = sel.min(rows.len().saturating_sub(1));
-    let offset = hits.scroll(list, sel, rows.len(), height);
+    let offset = hits.scroll(list, sel, rows.len(), height, fingerprint(rows));
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()

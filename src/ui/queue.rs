@@ -2,7 +2,7 @@ use super::library::fit;
 use super::theme;
 use super::widgets::{format_duration, pane};
 use crate::app::App;
-use crate::app::mouse::{HitMap, List, Target};
+use crate::app::mouse::{HitMap, List, Target, fingerprint};
 use crate::app::playlists::songs_label;
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -33,7 +33,8 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = app.queue.sel.min(items.len() - 1);
-    let offset = hits.scroll(List::Queue, sel, items.len(), height);
+    let uids = fingerprint(items.iter().map(|i| i.uid));
+    let offset = hits.scroll(List::Queue, sel, items.len(), height, uids);
     let lines: Vec<Line> = items
         .iter()
         .enumerate()

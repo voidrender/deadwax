@@ -2,7 +2,7 @@ use super::library::fit;
 use super::theme;
 use super::widgets::{format_duration, pane, tail};
 use crate::app::library::Loadable;
-use crate::app::mouse::{HitMap, List, Target};
+use crate::app::mouse::{HitMap, List, Target, fingerprint};
 use crate::app::search::{SearchRow, SearchState};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -70,9 +70,17 @@ fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut 
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = search.sel.min(rows.len() - 1);
+    let ids = fingerprint(
+        results
+            .artists
+            .iter()
+            .map(|a| &a.id)
+            .chain(results.albums.iter().map(|a| &a.id))
+            .chain(results.songs.iter().map(|s| &s.id)),
+    );
     // A header right over the selection scrolls into view with it.
     let header = usize::from(sel > 0 && matches!(rows[sel - 1], SearchRow::Header(_)));
-    let offset = hits.scroll_showing(List::Search, sel, header, rows.len(), height);
+    let offset = hits.scroll_showing(List::Search, sel, header, rows.len(), height, ids);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
