@@ -52,6 +52,17 @@ pub enum Target {
     LoginField(LoginField),
 }
 
+/// A click on a row, kept to spot a double click.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Click {
+    at: Instant,
+    list: List,
+    row: usize,
+    /// The list's `fingerprint` when it was clicked, so a list that changed
+    /// in between does not count the second click.
+    content: Option<u64>,
+}
+
 /// How a list was scrolled when it was last drawn.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Scroll {
@@ -156,6 +167,11 @@ impl HitMap {
         offset
     }
 
+    /// The `fingerprint` of `list` when it was last drawn.
+    fn content(&self, list: List) -> Option<u64> {
+        self.scrolls.get(&list).map(|s| s.content)
+    }
+
     /// Scrolls `list` by `rows` without moving its selection.
     fn scroll_by(&mut self, list: List, rows: isize) {
         if let Some(s) = self.scrolls.get_mut(&list) {
@@ -207,16 +223,23 @@ impl App {
         } else {
             self.click_main(target, row, area, x)
         };
-        // A row clicked twice in a row acts like Enter on it.
+        // A row of unchanged rows clicked twice in a row acts like Enter
+        // on it.
         if let (true, Target::Rows { list, .. }, Some(row)) = (selected, target, row) {
-            let now = Instant::now();
-            let double = last_click.is_some_and(|(at, l, r)| {
-                l == list && r == row && now.saturating_duration_since(at) <= DOUBLE_CLICK
+            let click = Click {
+                at: Instant::now(),
+                list,
+                row,
+                content: self.hits.content(list),
+            };
+            let double = last_click.is_some_and(|last| {
+                (last.list, last.row, last.content) == (list, row, click.content)
+                    && click.at.saturating_duration_since(last.at) <= DOUBLE_CLICK
             });
             if double {
                 effects.extend(self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
             } else {
-                self.last_click = Some((now, list, row));
+                self.last_click = Some(click);
             }
         }
         effects
@@ -546,12 +569,33 @@ mod tests {
     fn slow_or_different_second_clicks_are_single_clicks() {
         let mut app = queue_app(5);
         click_text(&mut app, "Song 3 ");
-        app.last_click = app
-            .last_click
-            .map(|(at, list, row)| (at.checked_sub(DOUBLE_CLICK * 2).unwrap(), list, row));
+        if let Some(click) = &mut app.last_click {
+            click.at = click.at.checked_sub(DOUBLE_CLICK * 2).unwrap();
+        }
         assert!(click_text(&mut app, "Song 3 ").is_empty());
         assert!(click_text(&mut app, "Song 2 ").is_empty());
         assert_eq!(app.queue.sel, 2);
+    }
+
+    #[test]
+    fn a_queue_change_between_clicks_stops_a_double_click() {
+        let mut app = queue_app(5);
+        click_text(&mut app, "Song 3 ");
+        // The first item goes, so item 4 moves up to the clicked index.
+        let mut snap = app.player.clone();
+        snap.items.remove(0);
+        app.handle_event(AppEvent::Snapshot(snap));
+        assert!(click_text(&mut app, "Song 4 ").is_empty());
+        assert_eq!(app.selected_queue_song().map(|s| s.id.as_str()), Some("4"));
+
+        // Playback progress alone leaves the rows as they were.
+        let mut snap = app.player.clone();
+        snap.position = 30.0;
+        app.handle_event(AppEvent::Snapshot(snap));
+        assert_eq!(
+            click_text(&mut app, "Song 4 "),
+            [Effect::Player(PlayerCommand::JumpTo(3))]
+        );
     }
 
     #[test]

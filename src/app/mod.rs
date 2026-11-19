@@ -434,7 +434,7 @@ pub struct App {
     /// list is scrolled.
     pub hits: mouse::HitMap,
     /// The last row clicked and when, to spot a double click.
-    last_click: Option<(Instant, mouse::List, usize)>,
+    last_click: Option<mouse::Click>,
     /// Options from the config that the settings menu changes. The runtime
     /// fills them in at startup and after a login.
     pub settings: settings::Settings,
