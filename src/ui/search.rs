@@ -2,6 +2,7 @@ use super::library::fit;
 use super::theme;
 use super::widgets::{format_duration, pane, tail};
 use crate::app::library::Loadable;
+use crate::app::mouse::{HitMap, List, Target, fingerprint};
 use crate::app::search::{SearchRow, SearchState};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -9,11 +10,13 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
 
-pub fn draw(frame: &mut Frame, area: Rect, search: &SearchState) {
+pub fn draw(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut HitMap) {
     let [input_area, list_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
     draw_input(frame, input_area, search);
-    draw_results(frame, list_area, search);
+    hits.add(input_area, Target::SearchInput);
+    hits.add(list_area, Target::Pane(List::Search));
+    draw_results(frame, list_area, search, hits);
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, search: &SearchState) {
@@ -38,7 +41,7 @@ fn draw_input(frame: &mut Frame, area: Rect, search: &SearchState) {
     frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
 }
 
-fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState) {
+fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut HitMap) {
     let block = pane("Results", !search.editing);
     let area = {
         let inner = block.inner(area);
@@ -67,7 +70,17 @@ fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = search.sel.min(rows.len() - 1);
-    let offset = (sel + 1).saturating_sub(height);
+    let ids = fingerprint(
+        results
+            .artists
+            .iter()
+            .map(|a| &a.id)
+            .chain(results.albums.iter().map(|a| &a.id))
+            .chain(results.songs.iter().map(|s| &s.id)),
+    );
+    // A header right over the selection scrolls into view with it.
+    let header = usize::from(sel > 0 && matches!(rows[sel - 1], SearchRow::Header(_)));
+    let offset = hits.scroll_showing(List::Search, sel, header, rows.len(), height, ids);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -106,6 +119,13 @@ fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState) {
         })
         .collect();
     frame.render_widget(Paragraph::new(lines), area);
+    hits.add(
+        area,
+        Target::Rows {
+            list: List::Search,
+            first: offset,
+        },
+    );
 }
 
 #[cfg(test)]
@@ -118,7 +138,8 @@ mod tests {
 
     fn render(s: &SearchState, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), s)).unwrap();
+        term.draw(|f| draw(f, f.area(), s, &mut HitMap::default()))
+            .unwrap();
         buffer_text(term.backend().buffer())
     }
 

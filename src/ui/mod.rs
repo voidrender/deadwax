@@ -12,6 +12,7 @@ pub mod strip;
 pub mod theme;
 pub mod widgets;
 
+use crate::app::mouse::{HitMap, Target};
 use crate::app::{App, Popup, Screen, View};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -19,10 +20,14 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Clear, Paragraph, Wrap};
 
 pub fn draw(frame: &mut Frame, app: &mut App) {
+    // Taken out of the app so the views can read the app while they add
+    // to it.
+    let mut hits = std::mem::take(&mut app.hits);
+    hits.clear();
     app.art.begin_frame(app.help || app.popup.is_some());
     match app.screen {
-        Screen::Main => draw_main(frame, app),
-        Screen::Login => login::draw(frame, frame.area(), &app.login),
+        Screen::Main => draw_main(frame, app, &mut hits),
+        Screen::Login => login::draw(frame, frame.area(), &app.login, &mut hits),
     }
     let area = frame.area();
     if app.help {
@@ -33,14 +38,15 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
             let info = info.clone();
             info::draw(frame, area, &info, &mut app.art);
         }
-        Some(Popup::Settings { sel }) => settings::draw(frame, area, app, *sel),
-        Some(popup) => draw_popup(frame, area, popup),
+        Some(Popup::Settings { sel }) => settings::draw(frame, area, app, *sel, &mut hits),
+        Some(popup) => draw_popup(frame, area, popup, &mut hits),
         None => {}
     }
     app.art.end_frame();
+    app.hits = hits;
 }
 
-fn draw_main(frame: &mut Frame, app: &mut App) {
+fn draw_main(frame: &mut Frame, app: &mut App, hits: &mut HitMap) {
     // Full-screen Now Playing shows everything the strip would, so the
     // strip makes way for it.
     let strip_height = if app.now_playing { 0 } else { strip::HEIGHT };
@@ -50,23 +56,23 @@ fn draw_main(frame: &mut Frame, app: &mut App) {
         Constraint::Length(strip_height),
     ])
     .areas(frame.area());
-    draw_top_bar(frame, bar, app);
+    draw_top_bar(frame, bar, app, hits);
     if app.now_playing {
-        now_playing::draw(frame, main, app);
+        now_playing::draw(frame, main, app, hits);
     } else {
         match app.view {
-            View::Library => library::draw(frame, main, &app.library),
-            View::Playlists => playlists::draw(frame, main, &app.playlists),
-            View::Search => search::draw(frame, main, &app.search),
-            View::Queue => queue::draw(frame, main, app),
+            View::Library => library::draw(frame, main, &app.library, hits),
+            View::Playlists => playlists::draw(frame, main, &app.playlists, hits),
+            View::Search => search::draw(frame, main, &app.search, hits),
+            View::Queue => queue::draw(frame, main, app, hits),
         }
-        strip::draw(frame, strip_area, app);
+        strip::draw(frame, strip_area, app, hits);
     }
 }
 
 /// The views and their keys on the left, the help key on the right. Plain
 /// text with the active view in the accent color, so the bar stays light.
-fn draw_top_bar(frame: &mut Frame, area: Rect, app: &App) {
+fn draw_top_bar(frame: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
     let help = Line::from(vec![
         Span::styled("? ", theme::muted()),
         Span::styled("keys ", theme::dim()),
@@ -78,13 +84,26 @@ fn draw_top_bar(frame: &mut Frame, area: Rect, app: &App) {
     .areas(area);
     frame.render_widget(Paragraph::new(tabs_line(app.view, app.now_playing)), tabs);
     frame.render_widget(Paragraph::new(help).right_aligned(), help_area);
+    hits.add(help_area, Target::Help);
+    // Each tab's number and title, matching the spans of `tabs_line`.
+    let mut x = tabs.x.saturating_add(TAB_LEAD);
+    for (n, view) in (1..).zip(View::ALL) {
+        let width = u16::try_from(format!("{n} {}", view.title()).len()).unwrap_or(u16::MAX);
+        let rect = Rect::new(x, tabs.y, width, 1).intersection(tabs);
+        hits.add(rect, Target::Tab(view));
+        x = x.saturating_add(width).saturating_add(TAB_GAP);
+    }
 }
 
+/// Columns before the first tab and between tabs.
+const TAB_LEAD: u16 = 1;
+const TAB_GAP: u16 = 3;
+
 fn tabs_line(active: View, now_playing: bool) -> Line<'static> {
-    let mut spans = vec![Span::raw(" ")];
+    let mut spans = vec![Span::raw(" ".repeat(TAB_LEAD.into()))];
     for (n, view) in (1..).zip(View::ALL) {
         if n > 1 {
-            spans.push(Span::raw("   "));
+            spans.push(Span::raw(" ".repeat(TAB_GAP.into())));
         }
         let (key, title) = if view == active && !now_playing {
             (theme::accent(), theme::accent_bold())
@@ -97,7 +116,7 @@ fn tabs_line(active: View, now_playing: bool) -> Line<'static> {
     Line::from(spans)
 }
 
-fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
+fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup, hits: &mut HitMap) {
     match popup {
         Popup::Confirm { message, .. } => {
             let hint = Line::from(vec![
@@ -124,7 +143,7 @@ fn draw_popup(frame: &mut Frame, area: Rect, popup: &Popup) {
         Popup::TextInput { title, value, .. } => {
             playlists::draw_text_input(frame, area, title, value);
         }
-        Popup::PlaylistPicker(picker) => playlists::draw_picker(frame, area, picker),
+        Popup::PlaylistPicker(picker) => playlists::draw_picker(frame, area, picker, hits),
         // Drawn by `info::draw` and `settings::draw`, which need more than
         // the popup.
         Popup::Info(_) | Popup::Settings { .. } => {}

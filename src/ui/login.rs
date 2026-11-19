@@ -1,6 +1,7 @@
 use super::theme;
 use super::widgets::{centered, tail};
 use crate::app::login::{LoginField, LoginState, cleartext_warning};
+use crate::app::mouse::{HitMap, Target};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Style};
@@ -82,7 +83,7 @@ fn field_line(label: &str, value: &str, focused: bool, room: usize) -> Line<'sta
     Line::from(spans)
 }
 
-pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
+pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState, hits: &mut HitMap) {
     let masked = "•".repeat(login.password.chars().count());
     let focus = |f| login.focus == f;
     // Borders, the leading space, the label and the caret take the rest.
@@ -129,6 +130,7 @@ pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
     let Some((rows, logo_width)) = pick_logo(area) else {
         let block = block.title(Span::styled(" Deadwax ", theme::accent_bold()));
         let rect = centered(area, WIDTH.min(area.width), HEIGHT.min(area.height));
+        add_field_hits(hits, block.inner(rect));
         frame.render_widget(Paragraph::new(lines).block(block), rect);
         return;
     };
@@ -139,7 +141,26 @@ pub fn draw(frame: &mut Frame, area: Rect, login: &LoginState) {
             .areas(whole);
     let logo = centered(logo, logo_width, logo_height);
     frame.render_widget(Paragraph::new(logo_lines(rows)), logo);
+    add_field_hits(hits, block.inner(form));
     frame.render_widget(Paragraph::new(lines).block(block), form);
+}
+
+/// The field rows, which follow one blank row inside the box.
+fn add_field_hits(hits: &mut HitMap, inner: Rect) {
+    let fields = [
+        LoginField::Server,
+        LoginField::Username,
+        LoginField::Password,
+    ];
+    for (y, field) in (inner.y.saturating_add(1)..).zip(fields) {
+        let row = Rect {
+            y,
+            height: 1,
+            ..inner
+        }
+        .intersection(inner);
+        hits.add(row, Target::LoginField(field));
+    }
 }
 
 #[cfg(test)]
@@ -151,7 +172,8 @@ mod tests {
 
     fn render(login: &LoginState, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), login)).unwrap();
+        term.draw(|f| draw(f, f.area(), login, &mut HitMap::default()))
+            .unwrap();
         buffer_text(term.backend().buffer())
     }
 

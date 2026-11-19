@@ -51,7 +51,7 @@ impl ArtistRow {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Column {
     #[default]
     Artists,
@@ -445,13 +445,29 @@ impl LibraryState {
     }
 
     fn move_selection(&mut self, delta: isize) -> Vec<Effect> {
+        let old = self.sel[self.focus.index()];
+        self.select(old.saturating_add_signed(delta))
+    }
+
+    /// A click on `col`: focuses it, and selects `row` when that is one of
+    /// its rows. Returns whether it did, and the effects.
+    pub fn click(&mut self, col: Column, row: Option<usize>) -> (bool, Vec<Effect>) {
+        self.focus = col;
+        match row {
+            Some(row) if row < self.len(col) => (true, self.select(row)),
+            _ => (false, Vec::new()),
+        }
+    }
+
+    /// Selects row `index` of the focused column, or its last row.
+    fn select(&mut self, index: usize) -> Vec<Effect> {
         let col = self.focus;
         let len = self.len(col);
         if len == 0 {
             return Vec::new();
         }
         let old = self.sel[col.index()];
-        let new = old.saturating_add_signed(delta).min(len - 1);
+        let new = index.min(len - 1);
         if new == old {
             return Vec::new();
         }

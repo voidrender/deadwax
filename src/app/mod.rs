@@ -2,6 +2,7 @@ pub mod info;
 pub mod keys;
 pub mod library;
 pub mod login;
+pub mod mouse;
 pub mod playlists;
 pub mod queue_view;
 pub mod search;
@@ -12,7 +13,7 @@ use crate::credentials::SavedTo;
 use crate::player::{EngineEvent, PlayerCommand, PlayerSnapshot};
 use crate::subsonic::{Album, Artist, Playlist, SearchResults, Song, SubsonicClient};
 use crate::ui::art::{ArtState, ResizeDone};
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, MouseEvent};
 use image::DynamicImage;
 use keys::{Action, SEEK_STEP, VOLUME_STEP};
 use library::{LibraryState, RANDOM_COUNT};
@@ -223,6 +224,9 @@ impl std::fmt::Debug for ApiResult {
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    /// A mouse button press or wheel notch. The runtime drops moves, drags
+    /// and releases.
+    Mouse(MouseEvent),
     Resize,
     Tick,
     Snapshot(PlayerSnapshot),
@@ -426,6 +430,11 @@ pub struct App {
     random_seq: u64,
     pub help: bool,
     pub popup: Option<Popup>,
+    /// Where the last frame drew what a click can select, and how far each
+    /// list is scrolled.
+    pub hits: mouse::HitMap,
+    /// The last row clicked and when, to spot a double click.
+    last_click: Option<mouse::Click>,
     /// Options from the config that the settings menu changes. The runtime
     /// fills them in at startup and after a login.
     pub settings: settings::Settings,
@@ -603,6 +612,7 @@ impl App {
     fn dispatch(&mut self, ev: AppEvent) -> Vec<Effect> {
         match ev {
             AppEvent::Key(key) => self.handle_key(key),
+            AppEvent::Mouse(ev) => self.handle_mouse(ev),
             AppEvent::Resize => Vec::new(),
             AppEvent::Tick => {
                 self.expire_status(Instant::now());

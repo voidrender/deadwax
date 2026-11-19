@@ -73,6 +73,19 @@ pub struct PlayerSnapshot {
     pub repeat: RepeatMode,
 }
 
+impl PlayerSnapshot {
+    /// The current track's length in seconds. Before the player reports
+    /// it, this is the length the server listed.
+    pub fn track_duration(&self) -> f64 {
+        if self.duration > 0.0 {
+            return self.duration;
+        }
+        self.current
+            .and_then(|i| self.items.get(i))
+            .map_or(0.0, |item| f64::from(item.song.duration))
+    }
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum EngineEvent {
     TrackStarted(Box<Song>),

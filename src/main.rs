@@ -1,3 +1,4 @@
+use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode,
@@ -140,7 +141,7 @@ fn install_panic_hook() {
 
 fn enter_terminal() -> anyhow::Result<Term> {
     enable_raw_mode()?;
-    if let Err(e) = execute!(stdout(), EnterAlternateScreen) {
+    if let Err(e) = execute!(stdout(), EnterAlternateScreen, EnableMouseCapture) {
         restore_terminal();
         return Err(e.into());
     }
@@ -156,5 +157,10 @@ fn enter_terminal() -> anyhow::Result<Term> {
 /// Best effort: each step runs even if an earlier one failed.
 fn restore_terminal() {
     let _ = disable_raw_mode();
-    let _ = execute!(stdout(), LeaveAlternateScreen, crossterm::cursor::Show);
+    let _ = execute!(
+        stdout(),
+        DisableMouseCapture,
+        LeaveAlternateScreen,
+        crossterm::cursor::Show
+    );
 }

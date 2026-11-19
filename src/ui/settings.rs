@@ -3,6 +3,7 @@
 use super::theme;
 use super::widgets::{centered, display_width, truncate};
 use crate::app::App;
+use crate::app::mouse::{HitMap, List, Target};
 use crate::app::settings::{ROWS, Row, protocol_label};
 use ratatui::Frame;
 use ratatui::layout::Rect;
@@ -13,7 +14,7 @@ const WIDTH: u16 = 52;
 /// Borders, padding, the rows, a blank row and the note row.
 const HEIGHT: u16 = 2 + 2 + 4 + 1 + 1;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &App, sel: usize) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &App, sel: usize, hits: &mut HitMap) {
     let rect = centered(area, WIDTH.min(area.width), HEIGHT.min(area.height));
     let block = Block::bordered()
         .border_type(BorderType::Rounded)
@@ -50,6 +51,17 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &App, sel: usize) {
         ));
     }
     frame.render_widget(Paragraph::new(lines), inner);
+    let rows = Rect {
+        height: u16::try_from(ROWS.len()).unwrap_or(u16::MAX),
+        ..inner
+    };
+    hits.add(
+        rows.intersection(inner),
+        Target::Rows {
+            list: List::Settings,
+            first: 0,
+        },
+    );
 }
 
 fn row_line(app: &App, row: Row, selected: bool, width: usize) -> Line<'static> {

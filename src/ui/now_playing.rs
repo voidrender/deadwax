@@ -3,6 +3,7 @@
 use super::art::Slot;
 use super::{strip, theme};
 use crate::app::App;
+use crate::app::mouse::{HitMap, Target};
 use crate::player::PlayerSnapshot;
 use crate::player::queue::RepeatMode;
 use crate::subsonic::Song;
@@ -22,9 +23,9 @@ const MAX_ART_WIDTH: u32 = 60;
 /// Columns left of the art and between art and text.
 const MARGIN: u16 = 2;
 
-pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
+pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, hits: &mut HitMap) {
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        draw_details(frame, area, app);
+        draw_details(frame, area, app, hits);
         return;
     }
     let font = app.art.picker.font_size();
@@ -36,7 +37,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App) {
         width: area.right().saturating_sub(left + 1),
         ..area
     };
-    draw_details(frame, text, app);
+    draw_details(frame, text, app, hits);
 }
 
 /// The largest area, at most `ART_PERCENT` of the width and `MAX_ART_WIDTH`
@@ -58,18 +59,21 @@ fn art_rect(area: Rect, cell_w: u32, cell_h: u32) -> Rect {
     Rect::new(area.x + MARGIN, area.y + (area.height - h) / 2, w, h)
 }
 
-fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
-    let mut lines = detail_lines(&app.player, area.width);
+fn draw_details(frame: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
+    let (mut lines, progress) = detail_lines(&app.player, area.width);
     // The strip is hidden in this view, so its status message and the key
     // that leaves the view show here.
     lines.push(Line::raw(""));
-    lines.push(match app.status_text() {
-        Some(msg) => Line::styled(msg.to_owned(), theme::accent()),
-        None => Line::from(vec![
+    let close = if let Some(msg) = app.status_text() {
+        lines.push(Line::styled(msg.to_owned(), theme::accent()));
+        None
+    } else {
+        lines.push(Line::from(vec![
             Span::styled("z ", theme::muted()),
             Span::styled("close", theme::dim()),
-        ]),
-    });
+        ]));
+        Some(lines.len() - 1)
+    };
     let height = u16::try_from(lines.len()).unwrap_or(u16::MAX);
     let top = area.height.saturating_sub(height) / 2;
     let rect = Rect {
@@ -78,6 +82,26 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App) {
         ..area
     };
     frame.render_widget(Paragraph::new(lines), rect);
+    // Each line takes one row, so line `i` sits on row `i` of `rect`.
+    let line_at = |i: usize| {
+        let y = rect.y.saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+        Rect {
+            y,
+            height: 1,
+            ..rect
+        }
+        .intersection(rect)
+    };
+    if let Some(i) = close {
+        let hint = Rect {
+            width: 7,
+            ..line_at(i)
+        };
+        hits.add(hint.intersection(rect), Target::NowPlaying);
+    }
+    if let Some(i) = progress {
+        hits.add(strip::bar_area(&app.player, line_at(i)), Target::Seek);
+    }
 }
 
 fn current(snap: &PlayerSnapshot) -> Option<&Song> {
@@ -106,9 +130,11 @@ fn joined(parts: &[String]) -> String {
         .join(" · ")
 }
 
-fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
+/// The lines about the current track, and which of them is the progress
+/// line.
+fn detail_lines(snap: &PlayerSnapshot, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
     let Some(song) = current(snap) else {
-        return vec![Line::styled("Nothing playing", theme::dim())];
+        return (vec![Line::styled("Nothing playing", theme::dim())], None);
     };
     let mut lines = vec![Line::styled(song.title.clone(), theme::accent_bold())];
     if !song.artist.is_empty() {
@@ -140,6 +166,7 @@ fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::styled("♥ favorited", theme::accent()));
     }
     lines.push(Line::raw(""));
+    let progress = lines.len();
     lines.push(strip::progress_line(snap, width));
     lines.push(strip::modes_line(snap));
     if let Some(next) = next(snap) {
@@ -149,7 +176,7 @@ fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
             Span::styled(next.title.clone(), theme::muted()),
         ]));
     }
-    lines
+    (lines, Some(progress))
 }
 
 #[cfg(test)]
@@ -221,7 +248,8 @@ mod tests {
 
     fn render(app: &mut App, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), app)).unwrap();
+        term.draw(|f| draw(f, f.area(), app, &mut HitMap::default()))
+            .unwrap();
         buffer_text(term.backend().buffer())
     }
 
