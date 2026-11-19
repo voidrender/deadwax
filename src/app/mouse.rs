@@ -1,7 +1,7 @@
 //! The mouse. Each frame, the UI records where it drew the things a click
 //! can select and how far each list is scrolled. A left click acts on the
-//! topmost area under the pointer and a second click on the same row acts
-//! like Enter.
+//! topmost area under the pointer, a second click on the same row acts like
+//! Enter, and the wheel scrolls the list under the pointer.
 
 use super::library::Column;
 use super::login::LoginField;
@@ -15,6 +15,8 @@ use std::time::{Duration, Instant};
 
 /// Longest gap between the two clicks of a double click.
 pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
+/// Rows one notch of the wheel scrolls.
+pub const WHEEL_ROWS: isize = 3;
 
 /// A list a click can focus or select a row in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -111,14 +113,31 @@ impl HitMap {
         );
         offset
     }
+
+    /// Scrolls `list` by `rows` without moving its selection.
+    fn scroll_by(&mut self, list: List, rows: isize) {
+        if let Some(s) = self.scrolls.get_mut(&list) {
+            s.offset = s
+                .offset
+                .saturating_add_signed(rows)
+                .min(s.len.saturating_sub(s.height));
+        }
+    }
 }
 
 impl App {
     pub(super) fn handle_mouse(&mut self, ev: MouseEvent) -> Vec<Effect> {
-        if ev.kind == MouseEventKind::Down(MouseButton::Left) {
-            self.click(ev.column, ev.row)
-        } else {
-            Vec::new()
+        match ev.kind {
+            MouseEventKind::Down(MouseButton::Left) => self.click(ev.column, ev.row),
+            MouseEventKind::ScrollDown => {
+                self.wheel(ev.column, ev.row, WHEEL_ROWS);
+                Vec::new()
+            }
+            MouseEventKind::ScrollUp => {
+                self.wheel(ev.column, ev.row, -WHEEL_ROWS);
+                Vec::new()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -213,6 +232,21 @@ impl App {
                 true
             }
             _ => false,
+        }
+    }
+
+    /// Scrolls the list under the pointer by `rows`. While a popup is open
+    /// only its own list scrolls.
+    fn wheel(&mut self, x: u16, y: u16, rows: isize) {
+        if self.help {
+            return;
+        }
+        let Some((_, Target::Pane(list) | Target::Rows { list, .. })) = self.hits.at(x, y) else {
+            return;
+        };
+        let in_popup = matches!(list, List::Picker | List::Settings);
+        if in_popup == self.popup.is_some() {
+            self.hits.scroll_by(list, rows);
         }
     }
 }
@@ -383,6 +417,15 @@ mod tests {
         draw(app).lines().position(|l| l.contains(text))
     }
 
+    fn mouse(app: &mut App, kind: MouseEventKind, x: u16, y: u16) -> Vec<Effect> {
+        app.handle_event(AppEvent::Mouse(MouseEvent {
+            kind,
+            column: x,
+            row: y,
+            modifiers: KeyModifiers::NONE,
+        }))
+    }
+
     #[test]
     fn clicking_a_row_in_a_scrolled_list_keeps_it_in_place() {
         let mut app = queue_app(60);
@@ -407,6 +450,25 @@ mod tests {
         // Moving past the top edge scrolls just enough to show the row.
         app.queue.select(&app.player.items, 0);
         assert_eq!(row_of(&mut app, "Song 0 "), Some(2));
+    }
+
+    #[test]
+    fn the_wheel_scrolls_the_list_and_keeps_the_selection() {
+        let mut app = queue_app(60);
+        let top = row_of(&mut app, "Song 0 ").unwrap();
+        let y = u16::try_from(top).unwrap();
+        mouse(&mut app, MouseEventKind::ScrollDown, 5, y);
+        assert_eq!(row_of(&mut app, "Song 3 "), Some(top));
+        assert_eq!(app.queue.sel, 0);
+        mouse(&mut app, MouseEventKind::ScrollUp, 5, y);
+        mouse(&mut app, MouseEventKind::ScrollUp, 5, y);
+        assert_eq!(row_of(&mut app, "Song 0 "), Some(top));
+        // A popup stops the list behind it from scrolling.
+        app.popup = Some(Popup::Settings { sel: 0 });
+        draw(&mut app);
+        mouse(&mut app, MouseEventKind::ScrollDown, 5, y);
+        app.popup = None;
+        assert_eq!(row_of(&mut app, "Song 0 "), Some(top));
     }
 
     #[test]
@@ -472,6 +534,8 @@ mod tests {
         assert_eq!(hits.scroll(list, 15, 50, 10), 6);
         assert_eq!(hits.scroll(list, 8, 50, 10), 6);
         assert_eq!(hits.scroll(list, 2, 50, 10), 2);
+        hits.scroll_by(list, 100);
+        assert_eq!(hits.scroll(list, 2, 50, 10), 40);
         // Fewer rows pull the view back so it stays full.
         assert_eq!(hits.scroll(list, 2, 20, 10), 2);
         assert_eq!(hits.scroll(list, 0, 5, 10), 0);

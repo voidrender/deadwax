@@ -361,9 +361,8 @@ where
         let ev = tokio::select! {
             term = input.next() => match term {
                 Some(Ok(Event::Key(key))) => AppEvent::Key(key),
-                // Moves, drags, releases and the wheel would only redraw an
-                // unchanged frame.
-                Some(Ok(Event::Mouse(m))) if matches!(m.kind, MouseEventKind::Down(_)) => AppEvent::Mouse(m),
+                // Moves, drags and releases would only redraw an unchanged frame.
+                Some(Ok(Event::Mouse(m))) if matches!(m.kind, MouseEventKind::Down(_) | MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) => AppEvent::Mouse(m),
                 Some(Ok(Event::Resize(..))) => AppEvent::Resize,
                 Some(Ok(_)) => continue,
                 Some(Err(e)) => return Err(e.into()),

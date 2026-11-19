@@ -224,7 +224,8 @@ impl std::fmt::Debug for ApiResult {
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
-    /// A mouse button press. The runtime drops everything else.
+    /// A mouse button press or wheel notch. The runtime drops moves, drags
+    /// and releases.
     Mouse(MouseEvent),
     Resize,
     Tick,

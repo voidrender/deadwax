@@ -193,9 +193,9 @@ In the input, `Enter` or `Esc` leaves the input and `↓` jumps to the results. 
 
 ### Mouse
 
-Click a tab to switch views, or `? keys` to open the help. Click a row in a list to select it, or a column's box to focus the column without moving its selection. Double-click a row to act on it as `Enter` does.
+Click a tab to switch views, or `? keys` to open the help. Click a row in a list to select it, or a column's box to focus the column without moving its selection. Double-click a row to act on it as `Enter` does. The wheel scrolls the list under the pointer and leaves the selection where it is.
 
-Clicking the search box starts typing, and clicking the playback strip opens Now Playing. In Now Playing, click `z close` to leave. While a popup is open, clicks reach only the popup. Any click closes the help.
+Clicking the search box starts typing, and clicking the playback strip opens Now Playing. In Now Playing, click `z close` to leave. While a popup is open, clicks and the wheel reach only the popup. Any click closes the help.
 
 Deadwax captures the mouse, so hold `Shift` (`Option` in iTerm2) while dragging to select text.
 
