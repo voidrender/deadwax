@@ -1,15 +1,20 @@
 //! The mouse. Each frame, the UI records where it drew the things a click
 //! can select and how far each list is scrolled. A left click acts on the
-//! topmost area under the pointer.
+//! topmost area under the pointer and a second click on the same row acts
+//! like Enter.
 
 use super::library::Column;
 use super::login::LoginField;
 use super::playlists::PlColumn;
 use super::settings::ROWS;
 use super::{App, Effect, Popup, Screen, View, keys::Action};
-use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+/// Longest gap between the two clicks of a double click.
+pub const DOUBLE_CLICK: Duration = Duration::from_millis(400);
 
 /// A list a click can focus or select a row in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -118,6 +123,7 @@ impl App {
     }
 
     fn click(&mut self, x: u16, y: u16) -> Vec<Effect> {
+        let last_click = self.last_click.take();
         // A click closes the help overlay, as any key that isn't bound does.
         if self.help {
             self.help = false;
@@ -130,25 +136,38 @@ impl App {
             Target::Rows { first, .. } => Some(first + usize::from(y - area.y)),
             _ => None,
         };
-        if self.popup.is_some() {
-            self.click_popup(target, row);
-            return Vec::new();
-        }
-        if self.screen == Screen::Login {
+        let (selected, mut effects) = if self.popup.is_some() {
+            (self.click_popup(target, row), Vec::new())
+        } else if self.screen == Screen::Login {
             if let Target::LoginField(field) = target {
                 self.login.focus = field;
             }
-            return Vec::new();
+            (false, Vec::new())
+        } else {
+            self.click_main(target, row)
+        };
+        // A row clicked twice in a row acts like Enter on it.
+        if let (true, Target::Rows { list, .. }, Some(row)) = (selected, target, row) {
+            let now = Instant::now();
+            let double = last_click.is_some_and(|(at, l, r)| {
+                l == list && r == row && now.saturating_duration_since(at) <= DOUBLE_CLICK
+            });
+            if double {
+                effects.extend(self.handle_key(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)));
+            } else {
+                self.last_click = Some((now, list, row));
+            }
         }
-        self.click_main(target, row)
+        effects
     }
 
-    /// A click on the main screen.
-    fn click_main(&mut self, target: Target, row: Option<usize>) -> Vec<Effect> {
+    /// A click on the main screen. Returns whether it selected a row, and
+    /// the effects.
+    fn click_main(&mut self, target: Target, row: Option<usize>) -> (bool, Vec<Effect>) {
         if target != Target::SearchInput {
             self.search.editing = false;
         }
-        match target {
+        let effects = match target {
             Target::Tab(view) => self.run_action(Action::ShowView(view)),
             Target::Help => self.run_action(Action::ToggleHelp),
             Target::NowPlaying => self.run_action(Action::ToggleNowPlaying),
@@ -157,40 +176,43 @@ impl App {
                 self.search.editing = true;
                 Vec::new()
             }
-            Target::Pane(list) | Target::Rows { list, .. } => self.click_list(list, row),
+            Target::Pane(list) | Target::Rows { list, .. } => return self.click_list(list, row),
             Target::LoginField(_) => Vec::new(),
-        }
+        };
+        (false, effects)
     }
 
     /// Focuses `list` in the shown view, and selects `row` in it when the
-    /// click landed on one.
-    fn click_list(&mut self, list: List, row: Option<usize>) -> Vec<Effect> {
+    /// click landed on one. Returns whether it did, and the effects.
+    fn click_list(&mut self, list: List, row: Option<usize>) -> (bool, Vec<Effect>) {
         match list {
             List::Library(col) => self.library.click(col, row),
             List::Playlists(col) => self.playlists.click(col, row),
-            List::Search => {
-                self.search.click(row);
-                Vec::new()
-            }
-            List::Queue => {
-                if let Some(row) = row {
+            List::Search => (self.search.click(row), Vec::new()),
+            List::Queue => match row {
+                Some(row) if row < self.player.items.len() => {
                     self.queue.select(&self.player.items, row);
+                    (true, Vec::new())
                 }
-                Vec::new()
-            }
-            List::Picker | List::Settings => Vec::new(),
+                _ => (false, Vec::new()),
+            },
+            List::Picker | List::Settings => (false, Vec::new()),
         }
     }
 
     /// Clicks while a popup is open only reach the popup's own rows.
-    fn click_popup(&mut self, target: Target, row: Option<usize>) {
+    /// Returns whether one was selected.
+    fn click_popup(&mut self, target: Target, row: Option<usize>) -> bool {
         let (Target::Rows { list, .. }, Some(row)) = (target, row) else {
-            return;
+            return false;
         };
         match (list, &mut self.popup) {
             (List::Picker, Some(Popup::PlaylistPicker(picker))) => picker.click(row),
-            (List::Settings, Some(Popup::Settings { sel })) if row < ROWS.len() => *sel = row,
-            _ => {}
+            (List::Settings, Some(Popup::Settings { sel })) if row < ROWS.len() => {
+                *sel = row;
+                true
+            }
+            _ => false,
         }
     }
 }
@@ -200,10 +222,11 @@ mod tests {
     use super::*;
     use crate::app::library::Loadable;
     use crate::app::{ApiResult, AppEvent};
+    use crate::player::PlayerCommand;
     use crate::player::PlayerSnapshot;
     use crate::player::queue::QueueItem;
     use crate::subsonic::{Album, Artist, Playlist, Song};
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use crossterm::event::KeyModifiers;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -384,6 +407,50 @@ mod tests {
         // Moving past the top edge scrolls just enough to show the row.
         app.queue.select(&app.player.items, 0);
         assert_eq!(row_of(&mut app, "Song 0 "), Some(2));
+    }
+
+    #[test]
+    fn double_clicking_a_row_acts_like_enter() {
+        let mut app = queue_app(5);
+        assert!(click_text(&mut app, "Song 3 ").is_empty());
+        assert_eq!(
+            click_text(&mut app, "Song 3 "),
+            [Effect::Player(PlayerCommand::JumpTo(3))]
+        );
+        // A third click starts over.
+        assert!(click_text(&mut app, "Song 3 ").is_empty());
+    }
+
+    #[test]
+    fn slow_or_different_second_clicks_are_single_clicks() {
+        let mut app = queue_app(5);
+        click_text(&mut app, "Song 3 ");
+        app.last_click = app
+            .last_click
+            .map(|(at, list, row)| (at.checked_sub(DOUBLE_CLICK * 2).unwrap(), list, row));
+        assert!(click_text(&mut app, "Song 3 ").is_empty());
+        assert!(click_text(&mut app, "Song 2 ").is_empty());
+        assert_eq!(app.queue.sel, 2);
+    }
+
+    #[test]
+    fn double_clicking_a_track_plays_it() {
+        let mut app = library_app();
+        click_text(&mut app, "Artist a");
+        app.handle_event(AppEvent::Api(ApiResult::Artist {
+            id: "a".into(),
+            result: Ok(vec![album("x")]),
+        }));
+        let songs = vec![song("1"), song("2")];
+        app.handle_event(AppEvent::Api(ApiResult::Album {
+            id: "x".into(),
+            result: Ok(songs.clone()),
+        }));
+        click_text(&mut app, "Song 2");
+        assert_eq!(
+            click_text(&mut app, "Song 2"),
+            [Effect::Player(PlayerCommand::PlayQueue { songs, start: 1 })]
+        );
     }
 
     #[test]

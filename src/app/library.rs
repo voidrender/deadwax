@@ -450,12 +450,12 @@ impl LibraryState {
     }
 
     /// A click on `col`: focuses it, and selects `row` when that is one of
-    /// its rows.
-    pub fn click(&mut self, col: Column, row: Option<usize>) -> Vec<Effect> {
+    /// its rows. Returns whether it did, and the effects.
+    pub fn click(&mut self, col: Column, row: Option<usize>) -> (bool, Vec<Effect>) {
         self.focus = col;
         match row {
-            Some(row) if row < self.len(col) => self.select(row),
-            _ => Vec::new(),
+            Some(row) if row < self.len(col) => (true, self.select(row)),
+            _ => (false, Vec::new()),
         }
     }
 

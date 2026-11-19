@@ -158,12 +158,18 @@ impl SearchState {
     }
 
     /// A click on the results. Stops typing, and selects `row` when it is
-    /// a result rather than a header.
-    pub(super) fn click(&mut self, row: Option<usize>) {
+    /// a result rather than a header. Returns whether it did.
+    pub(super) fn click(&mut self, row: Option<usize>) -> bool {
         self.editing = false;
         match row {
-            Some(row) if self.rows().get(row).is_some_and(|r| r.selectable()) => self.sel = row,
-            _ => self.snap_selection(),
+            Some(row) if self.rows().get(row).is_some_and(|r| r.selectable()) => {
+                self.sel = row;
+                true
+            }
+            _ => {
+                self.snap_selection();
+                false
+            }
         }
     }
 

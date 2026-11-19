@@ -62,11 +62,13 @@ impl PickerState {
     }
 
     /// Selects the clicked row when it is the new playlist row or a
-    /// playlist.
-    pub(super) fn click(&mut self, row: usize) {
-        if row <= self.last_row() {
+    /// playlist. Returns whether it did.
+    pub(super) fn click(&mut self, row: usize) -> bool {
+        let hit = row <= self.last_row();
+        if hit {
             self.sel = row;
         }
+        hit
     }
 }
 
@@ -334,12 +336,12 @@ impl PlaylistsState {
     }
 
     /// A click on `col`: focuses it, and selects `row` when that is one of
-    /// its rows.
-    pub fn click(&mut self, col: PlColumn, row: Option<usize>) -> Vec<Effect> {
+    /// its rows. Returns whether it did, and the effects.
+    pub fn click(&mut self, col: PlColumn, row: Option<usize>) -> (bool, Vec<Effect>) {
         self.focus = col;
         match row {
-            Some(row) if row < self.len(col) => self.select(row),
-            _ => Vec::new(),
+            Some(row) if row < self.len(col) => (true, self.select(row)),
+            _ => (false, Vec::new()),
         }
     }
 
