@@ -8,6 +8,7 @@ use super::login::LoginField;
 use super::playlists::PlColumn;
 use super::settings::ROWS;
 use super::{App, Effect, Popup, Screen, View, keys::Action};
+use crate::player::PlayerCommand;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 use std::collections::HashMap;
@@ -45,6 +46,8 @@ pub enum Target {
     SearchInput,
     /// The playback strip, or the close hint in Now Playing.
     NowPlaying,
+    /// A progress bar. A click seeks to the same fraction of the track.
+    Seek,
     LoginField(LoginField),
 }
 
@@ -163,7 +166,7 @@ impl App {
             }
             (false, Vec::new())
         } else {
-            self.click_main(target, row)
+            self.click_main(target, row, area, x)
         };
         // A row clicked twice in a row acts like Enter on it.
         if let (true, Target::Rows { list, .. }, Some(row)) = (selected, target, row) {
@@ -182,7 +185,13 @@ impl App {
 
     /// A click on the main screen. Returns whether it selected a row, and
     /// the effects.
-    fn click_main(&mut self, target: Target, row: Option<usize>) -> (bool, Vec<Effect>) {
+    fn click_main(
+        &mut self,
+        target: Target,
+        row: Option<usize>,
+        area: Rect,
+        x: u16,
+    ) -> (bool, Vec<Effect>) {
         if target != Target::SearchInput {
             self.search.editing = false;
         }
@@ -190,6 +199,7 @@ impl App {
             Target::Tab(view) => self.run_action(Action::ShowView(view)),
             Target::Help => self.run_action(Action::ToggleHelp),
             Target::NowPlaying => self.run_action(Action::ToggleNowPlaying),
+            Target::Seek => self.seek_to(area, x).into_iter().collect(),
             Target::SearchInput => {
                 self.view = View::Search;
                 self.search.editing = true;
@@ -199,6 +209,17 @@ impl App {
             Target::LoginField(_) => Vec::new(),
         };
         (false, effects)
+    }
+
+    /// Seeks to the fraction of the track that column `x` sits at in the
+    /// bar drawn at `bar`.
+    fn seek_to(&self, bar: Rect, x: u16) -> Option<Effect> {
+        let duration = self.player.track_duration();
+        if self.player.current.is_none() || duration <= 0.0 || bar.width == 0 {
+            return None;
+        }
+        let fraction = f64::from(x.saturating_sub(bar.x)) / f64::from(bar.width);
+        Some(Effect::Player(PlayerCommand::SeekTo(duration * fraction)))
     }
 
     /// Focuses `list` in the shown view, and selects `row` in it when the
@@ -256,7 +277,6 @@ mod tests {
     use super::*;
     use crate::app::library::Loadable;
     use crate::app::{ApiResult, AppEvent};
-    use crate::player::PlayerCommand;
     use crate::player::PlayerSnapshot;
     use crate::player::queue::QueueItem;
     use crate::subsonic::{Album, Artist, Playlist, Song};
@@ -512,6 +532,39 @@ mod tests {
         assert_eq!(
             click_text(&mut app, "Song 2"),
             [Effect::Player(PlayerCommand::PlayQueue { songs, start: 1 })]
+        );
+    }
+
+    /// The screen row and first column of the progress bar, and its width.
+    fn bar(app: &mut App) -> (u16, u16, usize) {
+        let screen = draw(app);
+        let (y, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("0:00 ─"))
+            .unwrap_or_else(|| panic!("no bar:\n{screen}"));
+        let start = line.find("0:00 ─").unwrap() + "0:00 ".len();
+        let x = line[..start].chars().count();
+        let width = line[start..].chars().take_while(|c| *c == '─').count();
+        (u16::try_from(x).unwrap(), u16::try_from(y).unwrap(), width)
+    }
+
+    #[test]
+    fn clicking_the_progress_bar_seeks() {
+        let mut app = queue_app(1);
+        let (x, y, width) = bar(&mut app);
+        let fx = click(&mut app, x + u16::try_from(width / 2).unwrap(), y);
+        let [Effect::Player(PlayerCommand::SeekTo(to))] = fx[..] else {
+            panic!("{fx:?}");
+        };
+        assert!((40.0..=60.0).contains(&to), "{to}");
+        assert!(!app.now_playing);
+
+        app.now_playing = true;
+        let (x, y, _) = bar(&mut app);
+        assert_eq!(
+            click(&mut app, x, y),
+            [Effect::Player(PlayerCommand::SeekTo(0.0))]
         );
     }
 

@@ -60,7 +60,7 @@ fn art_rect(area: Rect, cell_w: u32, cell_h: u32) -> Rect {
 }
 
 fn draw_details(frame: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
-    let mut lines = detail_lines(&app.player, area.width);
+    let (mut lines, progress) = detail_lines(&app.player, area.width);
     // The strip is hidden in this view, so its status message and the key
     // that leaves the view show here.
     lines.push(Line::raw(""));
@@ -99,6 +99,9 @@ fn draw_details(frame: &mut Frame, area: Rect, app: &App, hits: &mut HitMap) {
         };
         hits.add(hint.intersection(rect), Target::NowPlaying);
     }
+    if let Some(i) = progress {
+        hits.add(strip::bar_area(&app.player, line_at(i)), Target::Seek);
+    }
 }
 
 fn current(snap: &PlayerSnapshot) -> Option<&Song> {
@@ -127,9 +130,11 @@ fn joined(parts: &[String]) -> String {
         .join(" · ")
 }
 
-fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
+/// The lines about the current track, and which of them is the progress
+/// line.
+fn detail_lines(snap: &PlayerSnapshot, width: u16) -> (Vec<Line<'static>>, Option<usize>) {
     let Some(song) = current(snap) else {
-        return vec![Line::styled("Nothing playing", theme::dim())];
+        return (vec![Line::styled("Nothing playing", theme::dim())], None);
     };
     let mut lines = vec![Line::styled(song.title.clone(), theme::accent_bold())];
     if !song.artist.is_empty() {
@@ -161,6 +166,7 @@ fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
         lines.push(Line::styled("♥ favorited", theme::accent()));
     }
     lines.push(Line::raw(""));
+    let progress = lines.len();
     lines.push(strip::progress_line(snap, width));
     lines.push(strip::modes_line(snap));
     if let Some(next) = next(snap) {
@@ -170,7 +176,7 @@ fn detail_lines(snap: &PlayerSnapshot, width: u16) -> Vec<Line<'static>> {
             Span::styled(next.title.clone(), theme::muted()),
         ]));
     }
-    lines
+    (lines, Some(progress))
 }
 
 #[cfg(test)]

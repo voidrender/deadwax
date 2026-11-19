@@ -46,6 +46,7 @@ pub fn draw(frame: &mut Frame, area: Rect, app: &mut App, hits: &mut HitMap) {
         Paragraph::new(progress_line(&app.player, progress.width)),
         progress,
     );
+    hits.add(bar_area(&app.player, progress), Target::Seek);
     draw_footer(frame, footer, app);
 }
 
@@ -78,21 +79,8 @@ pub(super) fn progress_line(snap: &PlayerSnapshot, width: u16) -> Line<'static> 
         Status::Paused => "⏸",
         Status::Stopped => "■",
     };
-    let song_secs = snap
-        .current
-        .and_then(|i| snap.items.get(i))
-        .map_or(0.0, |item| f64::from(item.song.duration));
-    let duration = if snap.duration > 0.0 {
-        snap.duration
-    } else {
-        song_secs
-    };
-    let elapsed = format_duration(snap.position);
-    let total = format_duration(duration);
-
-    // Icon, elapsed, and total, each followed or preceded by one space.
-    let fixed = 1 + 1 + elapsed.chars().count() + 1 + 1 + total.chars().count();
-    let gauge = usize::from(width).saturating_sub(fixed);
+    let duration = snap.track_duration();
+    let (elapsed, total, _, gauge) = bar_columns(snap, width);
     let ratio = if duration > 0.0 && snap.position.is_finite() {
         (snap.position / duration).clamp(0.0, 1.0)
     } else {
@@ -116,6 +104,32 @@ pub(super) fn progress_line(snap: &PlayerSnapshot, width: u16) -> Line<'static> 
         Span::raw(" "),
         Span::styled(total, theme::muted()),
     ])
+}
+
+/// The times shown around the bar, and the bar's first column and width,
+/// for a progress line `width` columns wide.
+fn bar_columns(snap: &PlayerSnapshot, width: u16) -> (String, String, usize, usize) {
+    let width = width.min(MAX_PROGRESS_WIDTH);
+    let elapsed = format_duration(snap.position);
+    let total = format_duration(snap.track_duration());
+    // Icon, elapsed, and total, each followed or preceded by one space.
+    let start = 1 + 1 + elapsed.chars().count() + 1;
+    let fixed = start + 1 + total.chars().count();
+    let gauge = usize::from(width).saturating_sub(fixed);
+    (elapsed, total, start, gauge)
+}
+
+/// Where the bar of a progress line drawn at `line` sits.
+pub(super) fn bar_area(snap: &PlayerSnapshot, line: Rect) -> Rect {
+    let (_, _, start, gauge) = bar_columns(snap, line.width);
+    let start = u16::try_from(start).unwrap_or(u16::MAX);
+    Rect {
+        x: line.x.saturating_add(start),
+        width: u16::try_from(gauge).unwrap_or(0),
+        height: 1,
+        ..line
+    }
+    .intersection(line)
 }
 
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
