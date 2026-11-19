@@ -7,6 +7,8 @@ use std::collections::HashMap;
 
 /// Id of the synthetic album that holds the starred songs.
 pub const FAVORITES_ID: &str = "deadwax:favorites";
+/// Id of the synthetic artist row that lists every album.
+pub const ALL_ALBUMS_ID: &str = "deadwax:all-albums";
 /// Songs requested by the global `R` key.
 pub const RANDOM_COUNT: u32 = 200;
 
@@ -35,6 +37,7 @@ impl<T> Loadable<T> {
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArtistRow {
     Favorites,
+    AllAlbums,
     Artist(Artist),
 }
 
@@ -42,6 +45,7 @@ impl ArtistRow {
     pub fn id(&self) -> &str {
         match self {
             Self::Favorites => FAVORITES_ID,
+            Self::AllAlbums => ALL_ALBUMS_ID,
             Self::Artist(a) => &a.id,
         }
     }
@@ -75,7 +79,7 @@ impl Column {
     }
 }
 
-#[derive(Clone, Debug, Default, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct LibraryState {
     pub artists: Loadable<Vec<ArtistRow>>,
     pub albums: Loadable<Vec<Album>>,
@@ -90,11 +94,43 @@ pub struct LibraryState {
     pending_reveal: Option<(String, Option<String>)>,
     pub artist_sort: ArtistSort,
     pub album_sort: AlbumSort,
+    /// Sort for the All Albums list, kept apart from `album_sort`.
+    pub all_albums_sort: AlbumSort,
     pub track_sort: TrackSort,
     /// Server order of the loaded artists and tracks, for sorts that fall
     /// back to it.
     artist_ranks: HashMap<String, usize>,
     track_ranks: HashMap<String, usize>,
+    /// Every album, kept once loaded so moving past the All Albums row
+    /// does not fetch the whole library again.
+    all_albums: Option<Vec<Album>>,
+    /// Set while a `LoadAllAlbums` request is out, so selecting the row
+    /// again waits for it instead of starting another.
+    all_albums_loading: bool,
+}
+
+impl Default for LibraryState {
+    fn default() -> Self {
+        Self {
+            artists: Loadable::default(),
+            albums: Loadable::default(),
+            tracks: Loadable::default(),
+            focus: Column::default(),
+            sel: [0; 3],
+            albums_for: None,
+            tracks_for: None,
+            pending_album: None,
+            pending_reveal: None,
+            artist_sort: ArtistSort::default(),
+            album_sort: AlbumSort::default(),
+            all_albums_sort: AlbumSort::Name,
+            track_sort: TrackSort::default(),
+            artist_ranks: HashMap::new(),
+            track_ranks: HashMap::new(),
+            all_albums: None,
+            all_albums_loading: false,
+        }
+    }
 }
 
 fn favorites_album() -> Album {
@@ -146,6 +182,19 @@ impl LibraryState {
         self.select_artist()
     }
 
+    fn showing_all_albums(&self) -> bool {
+        self.albums_for.as_deref() == Some(ALL_ALBUMS_ID)
+    }
+
+    /// The sort of the albums column: All Albums has its own.
+    pub fn albums_sort(&self) -> AlbumSort {
+        if self.showing_all_albums() {
+            self.all_albums_sort
+        } else {
+            self.album_sort
+        }
+    }
+
     fn len(&self, col: Column) -> usize {
         match col {
             Column::Artists => self.artists.loaded().map_or(0, Vec::len),
@@ -190,6 +239,19 @@ impl LibraryState {
                 self.albums = Loadable::Loaded(vec![favorites_album()]);
                 self.select_album()
             }
+            ArtistRow::AllAlbums => {
+                self.albums_for = Some(ALL_ALBUMS_ID.to_string());
+                if let Some(albums) = self.all_albums.clone() {
+                    self.albums = Loadable::Loaded(albums);
+                    return self.select_album();
+                }
+                self.albums = Loadable::Loading;
+                if self.all_albums_loading {
+                    return Vec::new();
+                }
+                self.all_albums_loading = true;
+                vec![Effect::LoadAllAlbums]
+            }
             ArtistRow::Artist(a) => {
                 self.albums_for = Some(a.id.clone());
                 self.albums = Loadable::Loading;
@@ -227,7 +289,8 @@ impl LibraryState {
         }
         match result {
             Ok(artists) => {
-                let mut rows: Vec<ArtistRow> = std::iter::once(ArtistRow::Favorites)
+                let mut rows: Vec<ArtistRow> = [ArtistRow::Favorites, ArtistRow::AllAlbums]
+                    .into_iter()
                     .chain(artists.into_iter().map(ArtistRow::Artist))
                     .collect();
                 self.artist_ranks = sort::rank(rows.iter().map(ArtistRow::id));
@@ -256,12 +319,23 @@ impl LibraryState {
         id: &str,
         result: Result<Vec<Album>, String>,
     ) -> Result<Vec<Effect>, String> {
+        // Keep every album even if the user has moved on, so the next
+        // visit to the row needs no request. The copy stays in the current
+        // sort, so a visit only clones it.
+        let mut result = result;
+        if id == ALL_ALBUMS_ID {
+            self.all_albums_loading = false;
+            if let Ok(albums) = &mut result {
+                sort::sort_albums(albums, self.all_albums_sort);
+                self.all_albums = Some(albums.clone());
+            }
+        }
         if self.albums != Loadable::Loading || self.albums_for.as_deref() != Some(id) {
             return Ok(Vec::new());
         }
         match result {
             Ok(mut albums) => {
-                sort::sort_albums(&mut albums, self.album_sort);
+                sort::sort_albums(&mut albums, self.albums_sort());
                 if let Some(want) = self.pending_album.take()
                     && let Some(i) = albums.iter().position(|a| a.id == want)
                 {
@@ -322,11 +396,19 @@ impl LibraryState {
                 }
             }
             Column::Albums => {
-                self.album_sort = self.album_sort.next();
+                let sort = self.albums_sort().next();
+                if self.showing_all_albums() {
+                    self.all_albums_sort = sort;
+                } else {
+                    self.album_sort = sort;
+                }
                 if let Loadable::Loaded(albums) = &mut self.albums {
                     let keep = albums.get(self.sel[col]).map(|a| a.id.clone());
-                    sort::sort_albums(albums, self.album_sort);
+                    sort::sort_albums(albums, sort);
                     self.sel[col] = position(albums, keep.as_deref(), |a| &a.id);
+                    if self.albums_for.as_deref() == Some(ALL_ALBUMS_ID) {
+                        self.all_albums = Some(albums.clone());
+                    }
                 }
             }
             Column::Tracks => {
@@ -669,6 +751,13 @@ mod tests {
         }
     }
 
+    /// Moves the selection from Favorites past All Albums to the first
+    /// artist, returning the effects of the last move.
+    fn to_first_artist(app: &mut App) -> Vec<Effect> {
+        press(app, 'j');
+        press(app, 'j')
+    }
+
     /// Artists a and b loaded, selection on a, a's albums loaded, tracks loaded.
     fn loaded_app() -> App {
         let mut app = App::logged_in("s");
@@ -677,7 +766,7 @@ mod tests {
             &mut app,
             ApiResult::Artists(Ok(vec![artist("a"), artist("b")])),
         );
-        press(&mut app, 'j'); // Favorites -> a
+        to_first_artist(&mut app);
         api(
             &mut app,
             ApiResult::Artist {
@@ -695,12 +784,88 @@ mod tests {
         app
     }
 
+    /// Artist a loaded, selection moved to the All Albums row.
+    fn on_all_albums() -> (App, Vec<Effect>) {
+        let mut app = App::logged_in("s");
+        app.on_start();
+        api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
+        let fx = press(&mut app, 'j');
+        (app, fx)
+    }
+
+    fn all_albums(albums: Vec<Album>) -> ApiResult {
+        ApiResult::Artist {
+            id: ALL_ALBUMS_ID.into(),
+            result: Ok(albums),
+        }
+    }
+
+    #[test]
+    fn all_albums_row_follows_favorites() {
+        let (app, _) = on_all_albums();
+        let rows = app.library.artists.loaded().unwrap();
+        assert_eq!(rows[0], ArtistRow::Favorites);
+        assert_eq!(rows[1], ArtistRow::AllAlbums);
+    }
+
+    #[test]
+    fn selecting_all_albums_loads_every_album() {
+        let (mut app, fx) = on_all_albums();
+        assert_eq!(fx, [Effect::LoadAllAlbums]);
+        assert_eq!(app.library.albums_for.as_deref(), Some(ALL_ALBUMS_ID));
+        let fx = api(&mut app, all_albums(vec![album("x")]));
+        assert_eq!(fx, [Effect::LoadAlbum("x".into())]);
+    }
+
+    #[test]
+    fn all_albums_is_cached() {
+        let (mut app, _) = on_all_albums();
+        api(&mut app, all_albums(vec![album("x")]));
+        assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
+        assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("x".into())]);
+        assert!(matches!(app.library.albums, Loadable::Loaded(_)));
+    }
+
+    #[test]
+    fn all_albums_arriving_after_moving_on_is_kept() {
+        let (mut app, _) = on_all_albums();
+        assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
+        api(&mut app, all_albums(vec![album("x")]));
+        assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("x".into())]);
+    }
+
+    #[test]
+    fn all_albums_in_flight_is_not_requested_again() {
+        let (mut app, _) = on_all_albums();
+        press(&mut app, 'j');
+        assert_eq!(press(&mut app, 'k'), []);
+        assert_eq!(app.library.albums, Loadable::Loading);
+        assert_eq!(
+            api(&mut app, all_albums(vec![album("x")])),
+            [Effect::LoadAlbum("x".into())]
+        );
+    }
+
+    #[test]
+    fn failed_all_albums_retries_with_l() {
+        let (mut app, _) = on_all_albums();
+        api(
+            &mut app,
+            ApiResult::Artist {
+                id: ALL_ALBUMS_ID.into(),
+                result: Err("down".into()),
+            },
+        );
+        app.library.focus = Column::Albums;
+        assert_eq!(press(&mut app, 'l'), [Effect::LoadAllAlbums]);
+    }
+
     #[test]
     fn selecting_artist_loads_albums() {
         let mut app = App::logged_in("s");
         app.on_start();
         api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
-        assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("a".into())]);
+        assert_eq!(to_first_artist(&mut app), [Effect::LoadArtist("a".into())]);
         assert_eq!(app.library.albums, Loadable::Loading);
     }
 
@@ -709,7 +874,7 @@ mod tests {
         let mut app = App::logged_in("s");
         app.on_start();
         api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
-        press(&mut app, 'j');
+        to_first_artist(&mut app);
         let fx = api(
             &mut app,
             ApiResult::Artist {
@@ -728,7 +893,7 @@ mod tests {
             &mut app,
             ApiResult::Artists(Ok(vec![artist("a"), artist("b")])),
         );
-        press(&mut app, 'j');
+        to_first_artist(&mut app);
         assert_eq!(press(&mut app, 'j'), [Effect::LoadArtist("b".into())]);
         let fx = api(
             &mut app,
@@ -1023,7 +1188,7 @@ mod tests {
         app.help = true;
         assert!(press(&mut app, 'j').is_empty());
         assert!(!app.help);
-        assert_eq!(app.library.sel, [1, 0, 0]);
+        assert_eq!(app.library.sel, [2, 0, 0]);
     }
 
     #[test]
@@ -1041,7 +1206,7 @@ mod tests {
         let mut app = loaded_app();
         let fx = app.library.reveal("b", Some("b2"));
         assert_eq!(fx, [Effect::LoadArtist("b".into())]);
-        assert_eq!(app.library.sel[0], 2);
+        assert_eq!(app.library.sel[0], 3);
         api(
             &mut app,
             ApiResult::Artist {
@@ -1075,7 +1240,7 @@ mod tests {
         let mut app = App::logged_in("s");
         app.on_start();
         api(&mut app, ApiResult::Artists(Ok(vec![artist("a")])));
-        press(&mut app, 'j');
+        to_first_artist(&mut app);
         let fx = api(
             &mut app,
             ApiResult::Artist {
@@ -1113,6 +1278,66 @@ mod tests {
         assert_eq!(app.library.tracks_for.as_deref(), Some("x"));
     }
 
+    /// All Albums loaded with "B" (2010) and "A" (2000), Albums focused.
+    fn all_albums_app() -> App {
+        let (mut app, _) = on_all_albums();
+        let b = Album {
+            name: "B".into(),
+            ..dated("b", 2010)
+        };
+        let a = Album {
+            name: "A".into(),
+            ..dated("a", 2000)
+        };
+        api(&mut app, all_albums(vec![b, a]));
+        app.library.focus = Column::Albums;
+        app
+    }
+
+    #[test]
+    fn all_albums_start_sorted_by_name() {
+        let app = all_albums_app();
+        assert_eq!(album_ids(&app), ["a", "b"]);
+    }
+
+    #[test]
+    fn all_albums_sort_is_separate() {
+        let mut app = all_albums_app();
+        let fx = press(&mut app, 'o');
+        assert_eq!(
+            fx,
+            [Effect::SaveSorts(Sorts {
+                all_albums: AlbumSort::Newest,
+                ..Sorts::default()
+            })]
+        );
+        assert_eq!(app.library.all_albums_sort, AlbumSort::Newest);
+        assert_eq!(app.library.album_sort, AlbumSort::Newest);
+        assert_eq!(album_ids(&app), ["b", "a"]);
+        // An artist's albums keep their own sort.
+        press(&mut app, 'h');
+        press(&mut app, 'j');
+        api(
+            &mut app,
+            ApiResult::Artist {
+                id: "a".into(),
+                result: Ok(vec![dated("x", 2000), dated("y", 2010)]),
+            },
+        );
+        assert_eq!(album_ids(&app), ["y", "x"]);
+    }
+
+    #[test]
+    fn all_albums_keep_their_sort_when_revisited() {
+        let mut app = all_albums_app();
+        press(&mut app, 'o');
+        assert_eq!(album_ids(&app), ["b", "a"]);
+        press(&mut app, 'h');
+        press(&mut app, 'j');
+        assert_eq!(press(&mut app, 'k'), [Effect::LoadAlbum("b".into())]);
+        assert_eq!(album_ids(&app), ["b", "a"]);
+    }
+
     #[test]
     fn revealed_album_is_found_after_sorting() {
         let mut app = dated_app();
@@ -1130,10 +1355,13 @@ mod tests {
 
     #[test]
     fn sort_choices_survive_logout_and_login() {
-        let mut app = loaded_app();
+        let mut app = all_albums_app();
+        press(&mut app, 'o');
+        app.library.focus = Column::Artists;
         press(&mut app, 'o');
         app.show_login("s", "");
         assert_eq!(app.library.artist_sort, ArtistSort::MostAlbums);
+        assert_eq!(app.library.all_albums_sort, AlbumSort::Newest);
         app.view = View::Queue;
         assert_eq!(press(&mut app, 'o'), []);
     }

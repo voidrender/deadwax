@@ -54,7 +54,7 @@ impl App {
                 match lib.focus {
                     Column::Artists => match lib.artists.loaded()?.get(lib.sel[0])? {
                         ArtistRow::Artist(a) => Some(Info::Artist(a.clone())),
-                        ArtistRow::Favorites => None,
+                        ArtistRow::Favorites | ArtistRow::AllAlbums => None,
                     },
                     Column::Albums => lib
                         .albums
@@ -167,6 +167,7 @@ mod tests {
         };
         app.library.artists = Loadable::Loaded(vec![
             ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
             ArtistRow::Artist(artist.clone()),
         ]);
         let album = Album {
@@ -179,7 +180,10 @@ mod tests {
 
         // The Favorites row has nothing to describe.
         assert_eq!(app.info_target(), None);
+        // Neither has the All Albums row.
         app.library.sel[0] = 1;
+        assert_eq!(app.info_target(), None);
+        app.library.sel[0] = 2;
         assert_eq!(app.info_target(), Some(Info::Artist(artist)));
         app.library.focus = Column::Albums;
         assert_eq!(app.info_target(), Some(Info::Album(album)));

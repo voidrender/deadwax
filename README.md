@@ -160,8 +160,8 @@ The info popup (`i`) works on songs, albums, artists, and playlists. `i`, `Esc`,
 
 | List | Orders |
 |---|---|
-| Artists | Name (the server's order), most albums. Favorites stays at the top |
-| Albums | Newest release year first (the default), oldest first, name |
+| Artists | Name (the server's order), most albums. Favorites and All Albums stay at the top |
+| Albums | Newest release year first (the default), oldest first, name. All Albums keeps its own order and starts with name |
 | Tracks | Album order, title, artist |
 | Playlists | Server order, name |
 

@@ -35,7 +35,7 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
     let focused = lib.focus == col;
     let title = match col {
         Column::Artists => format!("Artists · {}", lib.artist_sort.label()),
-        Column::Albums => format!("Albums · {}", lib.album_sort.label()),
+        Column::Albums => format!("Albums · {}", lib.albums_sort().label()),
         Column::Tracks => format!("Tracks · {}", lib.track_sort.label()),
     };
     let block = pane(&title, focused);
@@ -48,6 +48,7 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column) {
     let body = match col {
         Column::Artists => body_of(&lib.artists, "No artists", |r| match r {
             ArtistRow::Favorites => ("★ Favorites".to_string(), String::new()),
+            ArtistRow::AllAlbums => ("All Albums".to_string(), String::new()),
             ArtistRow::Artist(a) => (a.name.clone(), String::new()),
         }),
         Column::Albums => body_of(&lib.albums, "No albums", |a| {
@@ -150,7 +151,7 @@ pub(super) fn fit(left: &str, right: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::app::library::ArtistRow;
+    use crate::app::library::{ALL_ALBUMS_ID, ArtistRow};
     use crate::subsonic::{Album, Artist};
     use crate::ui::testing::buffer_text;
     use ratatui::Terminal;
@@ -166,6 +167,7 @@ mod tests {
         let mut lib = LibraryState::default();
         lib.artists = Loadable::Loaded(vec![
             ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
             ArtistRow::Artist(Artist {
                 id: "a".into(),
                 name: "Boards of Canada".into(),
@@ -195,12 +197,21 @@ mod tests {
             "Artists · name",
             "Albums · newest",
             "Tracks · album order",
+            "All Albums",
             "Boards of Canada",
             "Geogaddi",
             "2002",
         ] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }
+    }
+
+    #[test]
+    fn all_albums_title_shows_its_own_sort() {
+        let mut lib = state();
+        lib.albums_for = Some(ALL_ALBUMS_ID.into());
+        let text = render(&lib, 100, 10);
+        assert!(text.contains("Albums · name"), "{text}");
     }
 
     #[test]

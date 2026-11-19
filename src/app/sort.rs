@@ -120,13 +120,26 @@ impl PlaylistSort {
 }
 
 /// Every sort choice, saved to `sorts.json` in the data directory.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Sorts {
     pub artists: ArtistSort,
     pub albums: AlbumSort,
     pub tracks: TrackSort,
     pub playlists: PlaylistSort,
+    pub all_albums: AlbumSort,
+}
+
+impl Default for Sorts {
+    fn default() -> Self {
+        Self {
+            artists: ArtistSort::default(),
+            albums: AlbumSort::default(),
+            tracks: TrackSort::default(),
+            playlists: PlaylistSort::default(),
+            all_albums: AlbumSort::Name,
+        }
+    }
 }
 
 impl Sorts {
@@ -173,16 +186,19 @@ fn by_text(a: &str, b: &str) -> Ordering {
     a.to_lowercase().cmp(&b.to_lowercase())
 }
 
-/// Sorts artist rows. Favorites stays first whatever the order.
+/// Sorts artist rows. Favorites and All Albums stay first whatever the order.
 pub(crate) fn sort_artists(
     rows: &mut [ArtistRow],
     sort: ArtistSort,
     ranks: &HashMap<String, usize>,
 ) {
     rows.sort_by(|a, b| match (a, b) {
-        (ArtistRow::Favorites, ArtistRow::Favorites) => Ordering::Equal,
-        (ArtistRow::Favorites, _) => Ordering::Less,
-        (_, ArtistRow::Favorites) => Ordering::Greater,
+        (ArtistRow::Favorites, ArtistRow::Favorites)
+        | (ArtistRow::AllAlbums, ArtistRow::AllAlbums) => Ordering::Equal,
+        (ArtistRow::Favorites, _) | (ArtistRow::AllAlbums, ArtistRow::Artist(_)) => Ordering::Less,
+        (_, ArtistRow::Favorites) | (ArtistRow::Artist(_), ArtistRow::AllAlbums) => {
+            Ordering::Greater
+        }
         (ArtistRow::Artist(a), ArtistRow::Artist(b)) => {
             let by_rank = rank_of(ranks, &a.id).cmp(&rank_of(ranks, &b.id));
             match sort {
@@ -291,16 +307,18 @@ mod tests {
     fn artists_keep_favorites_first_and_restore_server_order() {
         let mut rows = vec![
             ArtistRow::Favorites,
+            ArtistRow::AllAlbums,
             artist("the-b", 1),
             artist("c", 5),
             artist("a", 5),
         ];
         let ranks = rank(rows.iter().map(ArtistRow::id));
         sort_artists(&mut rows, ArtistSort::MostAlbums, &ranks);
-        assert_eq!(ids(&rows, ArtistRow::id)[1..], ["c", "a", "the-b"]);
-        assert_eq!(rows[0], ArtistRow::Favorites);
+        assert_eq!(ids(&rows, ArtistRow::id)[2..], ["c", "a", "the-b"]);
+        assert_eq!(rows[..2], [ArtistRow::Favorites, ArtistRow::AllAlbums]);
         sort_artists(&mut rows, ArtistSort::Name, &ranks);
-        assert_eq!(ids(&rows, ArtistRow::id)[1..], ["the-b", "c", "a"]);
+        assert_eq!(ids(&rows, ArtistRow::id)[2..], ["the-b", "c", "a"]);
+        assert_eq!(rows[..2], [ArtistRow::Favorites, ArtistRow::AllAlbums]);
     }
 
     fn song(id: &str, title: &str, artist: &str) -> Song {
@@ -362,6 +380,16 @@ mod tests {
     }
 
     #[test]
+    fn missing_all_albums_sort_defaults_to_name() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("sorts.json");
+        std::fs::write(&path, b"{\"albums\":\"oldest\"}").unwrap();
+        let sorts = Sorts::load(&path);
+        assert_eq!(sorts.all_albums, AlbumSort::Name);
+        assert_eq!(sorts.albums, AlbumSort::Oldest);
+    }
+
+    #[test]
     fn sorts_round_trip_and_survive_bad_files() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("sorts.json");
@@ -371,6 +399,7 @@ mod tests {
             albums: AlbumSort::Name,
             tracks: TrackSort::Title,
             playlists: PlaylistSort::Name,
+            all_albums: AlbumSort::Oldest,
         };
         s.save(&path).unwrap();
         assert_eq!(Sorts::load(&path), s);

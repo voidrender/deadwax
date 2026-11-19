@@ -259,6 +259,7 @@ pub enum Effect {
     LoadArtist(String),
     LoadAlbum(String),
     LoadFavorites,
+    LoadAllAlbums,
     PlayRandom {
         count: u32,
         seq: u64,
@@ -342,6 +343,7 @@ impl std::fmt::Debug for Effect {
             Self::LoadArtist(id) => f.debug_tuple("LoadArtist").field(id).finish(),
             Self::LoadAlbum(id) => f.debug_tuple("LoadAlbum").field(id).finish(),
             Self::LoadFavorites => f.write_str("LoadFavorites"),
+            Self::LoadAllAlbums => f.write_str("LoadAllAlbums"),
             Self::PlayRandom { count, seq } => f
                 .debug_struct("PlayRandom")
                 .field("count", count)
@@ -452,6 +454,7 @@ impl App {
         Sorts {
             artists: self.library.artist_sort,
             albums: self.library.album_sort,
+            all_albums: self.library.all_albums_sort,
             tracks: self.library.track_sort,
             playlists: self.playlists.list_sort,
         }
@@ -462,6 +465,7 @@ impl App {
     pub fn set_sorts(&mut self, sorts: Sorts) {
         self.library.artist_sort = sorts.artists;
         self.library.album_sort = sorts.albums;
+        self.library.all_albums_sort = sorts.all_albums;
         self.library.track_sort = sorts.tracks;
         self.playlists.list_sort = sorts.playlists;
     }
