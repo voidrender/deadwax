@@ -8,6 +8,8 @@ use discord_rich_presence::activity::{
 use discord_rich_presence::{DiscordIpc, DiscordIpcClient};
 use tokio::sync::mpsc;
 
+use crate::config::DiscordStatus;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct PresenceInfo {
     pub title: String,
@@ -16,6 +18,8 @@ pub struct PresenceInfo {
     pub image_url: Option<String>,
     pub position: f64,
     pub duration: u32,
+    /// Which field the member list shows.
+    pub status: DiscordStatus,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -26,6 +30,8 @@ pub struct ActivitySpec {
     pub large_text: String,
     pub start_ts: i64,
     pub end_ts: Option<i64>,
+    /// Whether the member list shows `details` instead of `state`.
+    pub status_shows_details: bool,
 }
 
 /// Makes a string acceptable to Discord: at least 2 bytes, at most 128 bytes.
@@ -55,14 +61,16 @@ pub fn build_activity(info: &PresenceInfo, default_image: &str, now_unix: i64) -
     };
     let start_ts = now_unix.saturating_sub(position);
     let end_ts = (info.duration > 0).then(|| start_ts.saturating_add(i64::from(info.duration)));
-    let large_text = if info.album.is_empty() {
-        &info.title
-    } else {
-        &info.album
+    // The member list can only show `state` or `details`, so the album
+    // trades places with the artist when it is the status.
+    let (state, large_text) = match info.status {
+        _ if info.album.is_empty() => (&info.artist, &info.title),
+        DiscordStatus::Album => (&info.album, &info.artist),
+        DiscordStatus::Artist | DiscordStatus::Song => (&info.artist, &info.album),
     };
     ActivitySpec {
         details: fit(&info.title),
-        state: fit(&info.artist),
+        state: fit(state),
         large_image: match info.image_url.as_deref() {
             Some(url) if url.len() <= MAX_IMAGE_URL_BYTES => url.to_string(),
             _ => fit(default_image),
@@ -70,6 +78,7 @@ pub fn build_activity(info: &PresenceInfo, default_image: &str, now_unix: i64) -
         large_text: fit(large_text),
         start_ts,
         end_ts,
+        status_shows_details: info.status == DiscordStatus::Song,
     }
 }
 
@@ -153,8 +162,12 @@ impl Worker {
         client.set_activity(
             Activity::new()
                 .activity_type(ActivityType::Listening)
-                // The member list shows the artist instead of the app name.
-                .status_display_type(StatusDisplayType::State)
+                // The member list shows a track field instead of the app name.
+                .status_display_type(if spec.status_shows_details {
+                    StatusDisplayType::Details
+                } else {
+                    StatusDisplayType::State
+                })
                 .details(&spec.details)
                 .state(&spec.state)
                 .timestamps(ts)
@@ -256,6 +269,7 @@ mod tests {
             image_url: Some("https://art.example/c.jpg".into()),
             position: 30.0,
             duration: 200,
+            status: DiscordStatus::Artist,
         }
     }
 
@@ -268,6 +282,39 @@ mod tests {
         assert_eq!(a.state, "Artist");
         assert_eq!(a.large_image, "https://art.example/c.jpg");
         assert_eq!(a.large_text, "Album");
+        assert!(!a.status_shows_details);
+    }
+
+    #[test]
+    fn album_status_puts_the_album_in_state() {
+        let mut i = info();
+        i.status = DiscordStatus::Album;
+        let a = build_activity(&i, "k", 1000);
+        assert_eq!(a.details, "Song");
+        assert_eq!(a.state, "Album");
+        assert_eq!(a.large_text, "Artist");
+        assert!(!a.status_shows_details);
+    }
+
+    #[test]
+    fn album_status_without_an_album_shows_the_artist() {
+        let mut i = info();
+        i.status = DiscordStatus::Album;
+        i.album = String::new();
+        let a = build_activity(&i, "k", 1000);
+        assert_eq!(a.state, "Artist");
+        assert_eq!(a.large_text, "Song");
+    }
+
+    #[test]
+    fn song_status_shows_details() {
+        let mut i = info();
+        i.status = DiscordStatus::Song;
+        let a = build_activity(&i, "k", 1000);
+        assert_eq!(a.details, "Song");
+        assert_eq!(a.state, "Artist");
+        assert_eq!(a.large_text, "Album");
+        assert!(a.status_shows_details);
     }
 
     #[test]

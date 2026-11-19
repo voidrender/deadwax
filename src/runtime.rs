@@ -6,7 +6,7 @@ use crate::app::settings::Settings;
 use crate::app::sort::Sorts;
 use crate::app::{ApiResult, App, AppEvent, Effect};
 use crate::art::{ArtQuery, CoverCache, Endpoints, PublicArtResolver};
-use crate::config::{Config, DEFAULT_DISCORD_APP_ID};
+use crate::config::{Config, DEFAULT_DISCORD_APP_ID, DiscordStatus};
 use crate::credentials::{CredentialStore, KeyringBackend, SecretBackend};
 use crate::integrations::discord::{self, PresenceMsg};
 use crate::integrations::hub::{Hub, HubPorts, MbidLookup};
@@ -28,7 +28,7 @@ use std::collections::HashSet;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::task::JoinHandle;
@@ -167,6 +167,7 @@ impl Ctx {
 #[derive(Debug)]
 struct LiveSettings {
     discord: AtomicBool,
+    discord_status: Mutex<DiscordStatus>,
     notifications: AtomicBool,
 }
 
@@ -174,8 +175,27 @@ impl Default for LiveSettings {
     fn default() -> Self {
         Self {
             discord: AtomicBool::new(true),
+            discord_status: Mutex::default(),
             notifications: AtomicBool::new(true),
         }
+    }
+}
+
+impl LiveSettings {
+    fn discord_status(&self) -> DiscordStatus {
+        *self
+            .discord_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Stores `status` and returns the one it replaced.
+    fn swap_discord_status(&self, status: DiscordStatus) -> DiscordStatus {
+        let mut cur = self
+            .discord_status
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::replace(&mut cur, status)
     }
 }
 
@@ -205,6 +225,7 @@ fn sync_settings(app: &mut App, ctx: &Ctx) {
     ctx.live
         .discord
         .store(app.settings.discord, Ordering::SeqCst);
+    ctx.live.swap_discord_status(app.settings.discord_status);
     ctx.live
         .notifications
         .store(app.settings.notifications, Ordering::SeqCst);
@@ -213,6 +234,7 @@ fn sync_settings(app: &mut App, ctx: &Ctx) {
 /// Applies settings from the menu, then writes them to the config.
 fn save_settings(settings: &Settings, app: &mut App, ctx: &Ctx) {
     let was_on = ctx.live.discord.swap(settings.discord, Ordering::SeqCst);
+    let old_status = ctx.live.swap_discord_status(settings.discord_status);
     ctx.live
         .notifications
         .store(settings.notifications, Ordering::SeqCst);
@@ -220,8 +242,8 @@ fn save_settings(settings: &Settings, app: &mut App, ctx: &Ctx) {
         if let Some(presence) = &ctx.presence {
             let _ = presence.send(PresenceMsg::Disconnect);
         }
-    } else if !was_on
-        && settings.discord
+    } else if settings.discord
+        && (!was_on || old_status != settings.discord_status)
         && let Some(hub) = &ctx.hub
     {
         let _ = hub.send(HubMsg::RefreshPresence);
@@ -895,6 +917,7 @@ fn save_config(path: &Path, server: &str, username: &str) -> anyhow::Result<()> 
             username: username.to_string(),
             discord: true,
             notifications: true,
+            discord_status: DiscordStatus::default(),
             discord_app_id: None,
             discord_default_image: "deadwax".to_string(),
             image_protocol: None,
@@ -1205,11 +1228,14 @@ impl HubPorts for LivePorts {
         });
     }
 
-    fn presence(&self, m: PresenceMsg) {
+    fn presence(&self, mut m: PresenceMsg) {
         // Updates stop while presence is off. Clears still go through, and
         // turning presence off already disconnected the worker.
-        if matches!(m, PresenceMsg::Update(_)) && !self.live.discord.load(Ordering::SeqCst) {
-            return;
+        if let PresenceMsg::Update(info) = &mut m {
+            if !self.live.discord.load(Ordering::SeqCst) {
+                return;
+            }
+            info.status = self.live.discord_status();
         }
         if let Some(tx) = &self.presence {
             let _ = tx.send(m);
@@ -1481,6 +1507,7 @@ mod tests {
             username: user.into(),
             discord: true,
             notifications: true,
+            discord_status: DiscordStatus::Album,
             discord_app_id: Some("42".into()),
             discord_default_image: "custom".into(),
             image_protocol: Some("kitty".into()),
@@ -1941,6 +1968,7 @@ mod tests {
 
         let off = Settings {
             discord: false,
+            discord_status: DiscordStatus::Song,
             notifications: false,
             image_protocol: crate::ui::art::ProtocolChoice::Halfblocks,
         };
@@ -1956,9 +1984,24 @@ mod tests {
         assert_eq!(saved.username, "alice");
         assert_eq!(saved.discord_default_image, "custom");
 
+        assert_eq!(saved.discord_status, DiscordStatus::Song);
+
         save_settings(&Settings::default(), &mut app, &ctx);
         assert!(matches!(hub_rx.try_recv(), Ok(HubMsg::RefreshPresence)));
         assert!(presence_rx.try_recv().is_err());
+        assert_eq!(ctx.live.discord_status(), DiscordStatus::Artist);
+
+        // A new status while presence is on shows the track again.
+        let album = Settings {
+            discord_status: DiscordStatus::Album,
+            ..Settings::default()
+        };
+        save_settings(&album, &mut app, &ctx);
+        assert!(matches!(hub_rx.try_recv(), Ok(HubMsg::RefreshPresence)));
+        save_settings(&album, &mut app, &ctx);
+        assert!(hub_rx.try_recv().is_err());
+        save_settings(&Settings::default(), &mut app, &ctx);
+        assert!(matches!(hub_rx.try_recv(), Ok(HubMsg::RefreshPresence)));
         assert_eq!(
             Config::load(&ctx.config_path)
                 .unwrap()
@@ -2242,5 +2285,43 @@ mod tests {
         };
         assert_eq!(ports.public_art(query).await, None);
         assert!(server.received_requests().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn presence_updates_carry_the_live_status() {
+        struct Silent;
+        impl Notifier for Silent {
+            fn notify(&self, _: &TrackNotification) -> anyhow::Result<()> {
+                Ok(())
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let (tx, _rx) = mpsc::unbounded_channel();
+        let (presence_tx, mut presence_rx) = mpsc::unbounded_channel();
+        let ports = LivePorts {
+            client: SharedClient::default(),
+            covers: dir.path().join("art"),
+            public: PublicArtResolver::new(Endpoints::public(), dir.path().join("public_art.json")),
+            notifier: Arc::new(Silent),
+            notify_failed: Arc::new(AtomicBool::new(false)),
+            presence: Some(presence_tx),
+            live: Arc::new(LiveSettings::default()),
+            outbox: Arc::new(tokio::sync::Mutex::new(None)),
+            tx,
+        };
+        ports.live.swap_discord_status(DiscordStatus::Song);
+        ports.presence(PresenceMsg::Update(discord::PresenceInfo {
+            title: "T".into(),
+            artist: "Ar".into(),
+            album: "Al".into(),
+            image_url: None,
+            position: 0.0,
+            duration: 0,
+            status: DiscordStatus::Artist,
+        }));
+        match presence_rx.try_recv() {
+            Ok(PresenceMsg::Update(info)) => assert_eq!(info.status, DiscordStatus::Song),
+            other => panic!("expected an update, got {other:?}"),
+        }
     }
 }

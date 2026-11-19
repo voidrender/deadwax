@@ -2,7 +2,7 @@
 //! app runs.
 
 use super::{App, Effect, Popup, Screen};
-use crate::config::Config;
+use crate::config::{Config, DiscordStatus};
 use crate::ui::art::{ProtocolChoice, parse_protocol};
 use crossterm::event::{KeyCode, KeyEvent};
 
@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Settings {
     pub discord: bool,
+    pub discord_status: DiscordStatus,
     pub notifications: bool,
     /// Applies on the next start, since detecting it means querying the
     /// terminal, which can't happen while the app reads keys.
@@ -20,6 +21,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             discord: true,
+            discord_status: DiscordStatus::default(),
             notifications: true,
             image_protocol: ProtocolChoice::Auto,
         }
@@ -30,6 +32,7 @@ impl Settings {
     pub fn from_config(c: &Config) -> Self {
         Self {
             discord: c.discord,
+            discord_status: c.discord_status,
             notifications: c.notifications,
             image_protocol: parse_protocol(c.image_protocol.as_deref()),
         }
@@ -38,6 +41,7 @@ impl Settings {
     /// Writes these options into `c`, leaving its other fields alone.
     pub fn apply_to(&self, c: &mut Config) {
         c.discord = self.discord;
+        c.discord_status = self.discord_status;
         c.notifications = self.notifications;
         c.image_protocol = protocol_value(self.image_protocol).map(str::to_string);
     }
@@ -47,16 +51,23 @@ impl Settings {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Row {
     Discord,
+    DiscordStatus,
     Notifications,
     ImageProtocol,
 }
 
-pub const ROWS: [Row; 3] = [Row::Discord, Row::Notifications, Row::ImageProtocol];
+pub const ROWS: [Row; 4] = [
+    Row::Discord,
+    Row::DiscordStatus,
+    Row::Notifications,
+    Row::ImageProtocol,
+];
 
 impl Row {
     pub fn label(self) -> &'static str {
         match self {
             Self::Discord => "Discord presence",
+            Self::DiscordStatus => "Discord status",
             Self::Notifications => "Notifications",
             Self::ImageProtocol => "Album art",
         }
@@ -137,6 +148,7 @@ impl App {
         let s = &mut self.settings;
         match ROWS[sel] {
             Row::Discord => s.discord = !s.discord,
+            Row::DiscordStatus => s.discord_status = s.discord_status.step(forward),
             Row::Notifications => s.notifications = !s.notifications,
             Row::ImageProtocol => s.image_protocol = step_protocol(s.image_protocol, forward),
         }
@@ -188,12 +200,13 @@ mod tests {
         assert_eq!(fx, [Effect::SaveSettings(app.settings.clone())]);
 
         key(&mut app, KeyCode::Char('j'));
+        key(&mut app, KeyCode::Char('j'));
         key(&mut app, KeyCode::Char(' '));
         assert!(!app.settings.notifications);
 
         // Other keys leave it open and change nothing.
         assert!(key(&mut app, KeyCode::Char('x')).is_empty());
-        assert_eq!(sel(&app), Some(1));
+        assert_eq!(sel(&app), Some(2));
     }
 
     #[test]
@@ -203,7 +216,8 @@ mod tests {
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
         key(&mut app, KeyCode::Down);
-        assert_eq!(sel(&app), Some(2));
+        key(&mut app, KeyCode::Down);
+        assert_eq!(sel(&app), Some(3));
         assert!(!app.image_protocol_pending());
         key(&mut app, KeyCode::Left);
         assert_eq!(app.settings.image_protocol, ProtocolChoice::Halfblocks);
@@ -214,15 +228,33 @@ mod tests {
     }
 
     #[test]
+    fn discord_status_cycles_both_ways() {
+        let mut app = App::logged_in("s");
+        key(&mut app, KeyCode::Char('S'));
+        key(&mut app, KeyCode::Down);
+        let fx = key(&mut app, KeyCode::Enter);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Album);
+        assert_eq!(fx, [Effect::SaveSettings(app.settings.clone())]);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Song);
+        key(&mut app, KeyCode::Right);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Artist);
+        key(&mut app, KeyCode::Left);
+        assert_eq!(app.settings.discord_status, DiscordStatus::Song);
+    }
+
+    #[test]
     fn settings_round_trip_through_the_config() {
         let mut c: Config = toml::from_str("server_url = \"https://x\"\nusername = \"a\"").unwrap();
         let s = Settings {
             discord: false,
+            discord_status: DiscordStatus::Song,
             notifications: false,
             image_protocol: ProtocolChoice::Iterm2,
         };
         s.apply_to(&mut c);
         assert_eq!(c.image_protocol.as_deref(), Some("iterm2"));
+        assert_eq!(c.discord_status, DiscordStatus::Song);
         assert_eq!(Settings::from_config(&c), s);
         Settings::default().apply_to(&mut c);
         assert_eq!(c.image_protocol, None);

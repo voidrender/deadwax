@@ -22,6 +22,48 @@ fn is_true(v: &bool) -> bool {
     *v
 }
 
+/// Which track field Discord shows as your status in the member list.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DiscordStatus {
+    #[default]
+    Artist,
+    Album,
+    Song,
+}
+
+impl DiscordStatus {
+    pub const ALL: [Self; 3] = [Self::Artist, Self::Album, Self::Song];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Artist => "Artist",
+            Self::Album => "Album",
+            Self::Song => "Song",
+        }
+    }
+
+    /// The next choice in `ALL`, wrapping around.
+    #[must_use]
+    pub fn step(self, forward: bool) -> Self {
+        let n = Self::ALL.len();
+        let i = Self::ALL.iter().position(|&x| x == self).unwrap_or(0);
+        Self::ALL[if forward {
+            (i + 1) % n
+        } else {
+            (i + n - 1) % n
+        }]
+    }
+
+    #[expect(
+        clippy::trivially_copy_pass_by_ref,
+        reason = "serde's skip_serializing_if passes a reference"
+    )]
+    fn is_default(&self) -> bool {
+        *self == Self::default()
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Config {
     pub server_url: String,
@@ -30,6 +72,8 @@ pub struct Config {
     pub discord: bool,
     #[serde(default = "default_true", skip_serializing_if = "is_true")]
     pub notifications: bool,
+    #[serde(default, skip_serializing_if = "DiscordStatus::is_default")]
+    pub discord_status: DiscordStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub discord_app_id: Option<String>,
     #[serde(default = "default_image")]
@@ -87,6 +131,7 @@ mod tests {
             username: "alice".into(),
             discord: false,
             notifications: false,
+            discord_status: DiscordStatus::Song,
             discord_app_id: Some("123".into()),
             discord_default_image: "deadwax".into(),
             image_protocol: None,
@@ -150,5 +195,25 @@ mod tests {
         assert!(!text.contains("notifications"), "{text}");
         let off = parse("notifications = false");
         assert!(!off.notifications);
+    }
+
+    #[test]
+    fn discord_status_defaults_to_artist_and_is_not_written() {
+        let c = parse("");
+        assert_eq!(c.discord_status, DiscordStatus::Artist);
+        let text = toml::to_string_pretty(&c).unwrap();
+        assert!(!text.contains("discord_status"), "{text}");
+    }
+
+    #[test]
+    fn discord_status_parses_each_value() {
+        for (v, want) in [
+            ("artist", DiscordStatus::Artist),
+            ("album", DiscordStatus::Album),
+            ("song", DiscordStatus::Song),
+        ] {
+            let c = parse(&format!("discord_status = \"{v}\""));
+            assert_eq!(c.discord_status, want);
+        }
     }
 }
