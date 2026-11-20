@@ -292,6 +292,7 @@ impl PlaylistsState {
             Ok(songs) => {
                 self.sel[1] = self.sel[1].min(songs.len().saturating_sub(1));
                 self.tracks = Loadable::Loaded(songs);
+                self.place_pending_track();
                 Ok(())
             }
             Err(msg) => {
@@ -1293,6 +1294,21 @@ mod tests {
         api(
             &mut app,
             ApiResult::Playlist {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("y")]),
+            },
+        );
+        assert_eq!(app.playlists.sel[1], 1);
+    }
+
+    #[test]
+    fn g_selects_the_track_when_a_reload_brings_the_playlist() {
+        let mut app = app_with_playlist();
+        play(&mut app, from("y", "pl2"));
+        press(&mut app, 'g');
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
                 id: "pl2".into(),
                 result: Ok(vec![song("x"), song("y")]),
             },
