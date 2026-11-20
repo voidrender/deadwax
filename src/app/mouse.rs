@@ -554,6 +554,35 @@ mod tests {
     }
 
     #[test]
+    fn a_track_change_keeps_a_scrolled_track_list_in_place() {
+        let mut app = library_app();
+        app.library.tracks = Loadable::Loaded((0..60).map(|i| song(&i.to_string())).collect());
+        let screen = draw(&mut app);
+        let (top, line) = screen
+            .lines()
+            .enumerate()
+            .find(|(_, l)| l.contains("Song 0 "))
+            .unwrap();
+        let x = u16::try_from(line[..line.find("Song 0 ").unwrap()].chars().count()).unwrap();
+        mouse(
+            &mut app,
+            MouseEventKind::ScrollDown,
+            x,
+            u16::try_from(top).unwrap(),
+        );
+        assert_eq!(row_of(&mut app, "Song 3 "), Some(top));
+        app.handle_event(AppEvent::Snapshot(PlayerSnapshot {
+            items: vec![QueueItem {
+                uid: 0,
+                song: song("5"),
+            }],
+            current: Some(0),
+            ..Default::default()
+        }));
+        assert_eq!(row_of(&mut app, "Song 3 "), Some(top));
+    }
+
+    #[test]
     fn double_clicking_a_row_acts_like_enter() {
         let mut app = queue_app(5);
         assert!(click_text(&mut app, "Song 3 ").is_empty());

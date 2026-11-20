@@ -1,8 +1,8 @@
-use super::library::{Body, body_of, draw_rows, is_playing_at, track_row};
+use super::library::{Body, body_of, draw_rows, is_playing_at, track_row, tracks_content};
 use super::theme;
 use super::widgets::{centered, pane, tail};
 use crate::app::library::Loadable;
-use crate::app::mouse::{HitMap, List, Target};
+use crate::app::mouse::{HitMap, List, Target, fingerprint};
 use crate::app::playlists::{PickerState, PlColumn, PlaylistsState, songs_label};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -76,16 +76,23 @@ fn draw_column(
         PlColumn::Lists => false,
     };
     match body {
-        Body::Rows(rows) => draw_rows(
-            frame,
-            inner,
-            &rows,
-            pl.sel[col.index()],
-            focused,
-            list,
-            is_playing,
-            hits,
-        ),
+        Body::Rows(rows) => {
+            let content = match col {
+                PlColumn::Tracks => tracks_content(pl.tracks.loaded()),
+                PlColumn::Lists => fingerprint(&rows),
+            };
+            draw_rows(
+                frame,
+                inner,
+                &rows,
+                pl.sel[col.index()],
+                focused,
+                list,
+                is_playing,
+                content,
+                hits,
+            );
+        }
         Body::Message(lines) => {
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
         }
@@ -154,6 +161,7 @@ pub fn draw_picker(frame: &mut Frame, area: Rect, picker: &PickerState, hits: &m
             true,
             List::Picker,
             |_| false,
+            fingerprint(&rows),
             hits,
         );
     }

@@ -83,7 +83,15 @@ fn draw_column(
         Column::Artists | Column::Albums => false,
     };
     match body {
-        Body::Rows(rows) => draw_rows(frame, inner, &rows, sel, focused, list, is_playing, hits),
+        Body::Rows(rows) => {
+            let content = match col {
+                Column::Tracks => tracks_content(lib.tracks.loaded()),
+                Column::Artists | Column::Albums => fingerprint(&rows),
+            };
+            draw_rows(
+                frame, inner, &rows, sel, focused, list, is_playing, content, hits,
+            );
+        }
         Body::Message(lines) => {
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
         }
@@ -111,6 +119,13 @@ pub(super) fn track_row(song: &Song, playing: Option<&str>) -> (String, String) 
         format!("{}{}", song_mark(song, playing), song.title),
         format_duration(f64::from(song.duration)),
     )
+}
+
+/// What a track list's scroll position follows. It hashes the rows as
+/// drawn with nothing playing, so a track change does not count as new
+/// content and pull the list back to the cursor.
+pub(super) fn tracks_content(songs: Option<&Vec<Song>>) -> u64 {
+    fingerprint(songs.into_iter().flatten().map(|s| track_row(s, None)))
 }
 
 /// Whether row `i` of `songs` is the song the player is on.
@@ -145,10 +160,11 @@ pub(super) fn body_of<T>(
 
 /// Draws the rows of `list` that fit, scrolled to show `sel`, and records
 /// them for clicks. Rows for which `is_playing` holds are drawn in the
-/// accent color unless selected.
+/// accent color unless selected. A change in `content` scrolls the list
+/// back to `sel`.
 #[expect(
     clippy::too_many_arguments,
-    reason = "each list passes its own rows, selection and playing test"
+    reason = "each list passes its own rows, selection, playing test and content hash"
 )]
 pub(super) fn draw_rows(
     frame: &mut Frame,
@@ -158,12 +174,13 @@ pub(super) fn draw_rows(
     focused: bool,
     list: List,
     is_playing: impl Fn(usize) -> bool,
+    content: u64,
     hits: &mut HitMap,
 ) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = sel.min(rows.len().saturating_sub(1));
-    let offset = hits.scroll(list, sel, rows.len(), height, fingerprint(rows));
+    let offset = hits.scroll(list, sel, rows.len(), height, content);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -389,6 +406,7 @@ mod tests {
                 false,
                 List::Search,
                 |_| false,
+                fingerprint(&rows),
                 &mut HitMap::default(),
             );
         })
