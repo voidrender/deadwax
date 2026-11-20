@@ -46,6 +46,9 @@ pub struct PlaylistsState {
     /// A playlist and song to select once they load, set by jumping to the
     /// playing track.
     pending_track: Option<(String, String)>,
+    /// Set when the playlists arrived without the one a jump was waiting
+    /// for, so the app can fall back to the album.
+    missed_jump: bool,
 }
 
 /// State of the add-to-playlist popup. Row 0 is "+ New playlist" and row
@@ -232,13 +235,17 @@ impl PlaylistsState {
                 {
                     self.sel[0] = i;
                 }
-                if let Some((want, _)) = &self.pending_track
-                    && let Some(i) = self
+                if let Some((want, _)) = &self.pending_track {
+                    if let Some(i) = self
                         .lists
                         .loaded()
                         .and_then(|l| l.iter().position(|p| &p.id == want))
-                {
-                    self.sel[0] = i;
+                    {
+                        self.sel[0] = i;
+                    } else {
+                        self.pending_track = None;
+                        self.missed_jump = true;
+                    }
                 }
                 let now = self.selected_list().map(|p| p.id.clone());
                 if first_load || now != self.tracks_for {
@@ -710,10 +717,15 @@ impl App {
                     p.lists = self.playlists.lists.clone();
                     p.sel = p.sel.min(p.last_row());
                 }
-                applied.unwrap_or_else(|msg| {
+                let mut effects = applied.unwrap_or_else(|msg| {
                     self.set_status(format!("Couldn't load playlists: {msg}"));
                     Vec::new()
-                })
+                });
+                // The jump's playlist is gone, so show the track's album.
+                if std::mem::take(&mut self.playlists.missed_jump) && self.view == View::Playlists {
+                    effects.extend(self.go_to_playing());
+                }
+                effects
             }
             ApiResult::Playlist { id, result } => {
                 if self.playlists.finish_load(&id) {
@@ -1314,6 +1326,22 @@ mod tests {
             },
         );
         assert_eq!(app.playlists.sel[1], 1);
+    }
+
+    #[test]
+    fn g_falls_back_to_the_album_when_the_loaded_lists_lack_the_playlist() {
+        let mut app = App::new();
+        play(&mut app, from("y", "deleted"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadPlaylists]);
+        let fx = api(
+            &mut app,
+            ApiResult::Playlists(Ok(vec![playlist("pl1", "Mix")])),
+        );
+        assert_eq!(
+            fx,
+            [Effect::LoadPlaylist("pl1".into()), Effect::LoadArtists]
+        );
+        assert_eq!(app.view, View::Library);
     }
 
     #[test]
