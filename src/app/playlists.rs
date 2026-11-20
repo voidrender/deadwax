@@ -45,10 +45,10 @@ pub struct PlaylistsState {
     held_reload: Option<(String, Result<Vec<Song>, String>)>,
     /// A playlist and song to select once they load, set by jumping to the
     /// playing track.
-    pending_track: Option<(String, String)>,
-    /// Set when the playlists arrived without the one a jump was waiting
-    /// for, so the app can fall back to the album.
-    missed_jump: bool,
+    pending_track: Option<(String, Box<Song>)>,
+    /// The song of a jump whose playlist was missing when the playlists
+    /// arrived, so the app can open its album instead.
+    missed_jump: Option<Box<Song>>,
 }
 
 /// State of the add-to-playlist popup. Row 0 is "+ New playlist" and row
@@ -147,22 +147,23 @@ impl PlaylistsState {
         }
     }
 
-    /// Opens playlist `id` with the cursor on `song_id`, loading what is
+    /// Opens playlist `id` with the cursor on `song`, loading what is
     /// missing first.
-    pub fn reveal(&mut self, id: &str, song_id: &str) -> Vec<Effect> {
+    pub fn reveal(&mut self, id: &str, song: &Song) -> Vec<Effect> {
         self.focus = PlColumn::Tracks;
+        self.missed_jump = None;
         if self.tracks_for.as_deref() == Some(id) {
-            if let Some(i) = song_position(self.tracks.loaded(), song_id) {
+            if let Some(i) = song_position(self.tracks.loaded(), &song.id) {
                 self.sel[1] = i;
                 self.pending_track = None;
                 return Vec::new();
             }
             if self.tracks == Loadable::Loading {
-                self.pending_track = Some((id.to_string(), song_id.to_string()));
+                self.pending_track = Some((id.to_string(), Box::new(song.clone())));
                 return Vec::new();
             }
         }
-        self.pending_track = Some((id.to_string(), song_id.to_string()));
+        self.pending_track = Some((id.to_string(), Box::new(song.clone())));
         let mut effects = self.start();
         if let Some(i) = self
             .lists
@@ -178,14 +179,14 @@ impl PlaylistsState {
     /// Moves the cursor to the pending song once its playlist's tracks are
     /// in.
     fn place_pending_track(&mut self) {
-        let Some((id, song_id)) = self.pending_track.take() else {
+        let Some((id, song)) = self.pending_track.take() else {
             return;
         };
         if self.tracks_for.as_deref() != Some(&id) {
-            self.pending_track = Some((id, song_id));
+            self.pending_track = Some((id, song));
             return;
         }
-        if let Some(i) = song_position(self.tracks.loaded(), &song_id) {
+        if let Some(i) = song_position(self.tracks.loaded(), &song.id) {
             self.sel[1] = i;
         }
     }
@@ -243,8 +244,7 @@ impl PlaylistsState {
                     {
                         self.sel[0] = i;
                     } else {
-                        self.pending_track = None;
-                        self.missed_jump = true;
+                        self.missed_jump = self.pending_track.take().map(|(_, song)| song);
                     }
                 }
                 let now = self.selected_list().map(|p| p.id.clone());
@@ -434,6 +434,7 @@ impl PlaylistsState {
             return Vec::new();
         }
         self.pending_track = None;
+        self.missed_jump = None;
         self.sel[col.index()] = new;
         match col {
             PlColumn::Lists => self.select_list(),
@@ -722,8 +723,10 @@ impl App {
                     Vec::new()
                 });
                 // The jump's playlist is gone, so show the track's album.
-                if std::mem::take(&mut self.playlists.missed_jump) && self.view == View::Playlists {
-                    effects.extend(self.go_to_playing());
+                if let Some(song) = self.playlists.missed_jump.take()
+                    && self.view == View::Playlists
+                {
+                    effects.extend(self.go_to_song(&song));
                 }
                 effects
             }
@@ -1342,6 +1345,40 @@ mod tests {
             [Effect::LoadPlaylist("pl1".into()), Effect::LoadArtists]
         );
         assert_eq!(app.view, View::Library);
+    }
+
+    #[test]
+    fn the_album_fallback_uses_the_jumped_track_not_the_next_one() {
+        let mut app = App::new();
+        app.on_start();
+        api(&mut app, ApiResult::Artists(Ok(Vec::new())));
+        play(&mut app, from("y", "deleted"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadPlaylists]);
+        // Playback moves on before the playlists arrive.
+        play(
+            &mut app,
+            Song {
+                album_id: Some("other".into()),
+                ..song("z")
+            },
+        );
+        api(
+            &mut app,
+            ApiResult::Playlists(Ok(vec![playlist("pl1", "Mix")])),
+        );
+        assert_eq!(app.view, View::Library);
+        let album = |id: &str| crate::subsonic::Album {
+            id: id.into(),
+            ..Default::default()
+        };
+        let fx = api(
+            &mut app,
+            ApiResult::Artist {
+                id: crate::app::library::ALL_ALBUMS_ID.into(),
+                result: Ok(vec![album("al"), album("other")]),
+            },
+        );
+        assert_eq!(fx, [Effect::LoadAlbum("al".into())]);
     }
 
     #[test]
