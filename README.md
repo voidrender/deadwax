@@ -136,6 +136,7 @@ Press `?` in the app for the same list. When a text input has focus (search, log
 | `1` `2` `3` `4` | Library, Playlists, Search, Queue |
 | `/` | Search, with the input focused |
 | `z` | Toggle full-screen Now Playing |
+| `g` | Go to the playing track: the playlist it was queued from, or else its album |
 | `?` | Toggle help |
 | `space` | Play / pause |
 | `.` `,` | Next / previous track |
