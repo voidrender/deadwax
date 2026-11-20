@@ -676,6 +676,11 @@ impl App {
         self.player.current.and_then(|i| self.player.items.get(i))
     }
 
+    /// The id of the song the player is on, playing or paused.
+    pub fn playing_id(&self) -> Option<&str> {
+        self.current_item().map(|item| item.song.id.as_str())
+    }
+
     fn handle_api(&mut self, result: ApiResult) -> Vec<Effect> {
         match result {
             ApiResult::LoggedIn { client, saved_to } => {

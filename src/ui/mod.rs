@@ -61,9 +61,11 @@ fn draw_main(frame: &mut Frame, app: &mut App, hits: &mut HitMap) {
         now_playing::draw(frame, main, app, hits);
     } else {
         match app.view {
-            View::Library => library::draw(frame, main, &app.library, hits),
-            View::Playlists => playlists::draw(frame, main, &app.playlists, hits),
-            View::Search => search::draw(frame, main, &app.search, hits),
+            View::Library => library::draw(frame, main, &app.library, app.playing_id(), hits),
+            View::Playlists => {
+                playlists::draw(frame, main, &app.playlists, app.playing_id(), hits);
+            }
+            View::Search => search::draw(frame, main, &app.search, app.playing_id(), hits),
             View::Queue => queue::draw(frame, main, app, hits),
         }
         strip::draw(frame, strip_area, app, hits);

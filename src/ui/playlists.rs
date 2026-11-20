@@ -1,6 +1,6 @@
-use super::library::{Body, body_of, draw_rows};
+use super::library::{Body, body_of, draw_rows, is_playing_at, track_row};
 use super::theme;
-use super::widgets::{centered, format_duration, pane, tail};
+use super::widgets::{centered, pane, tail};
 use crate::app::library::Loadable;
 use crate::app::mouse::{HitMap, List, Target};
 use crate::app::playlists::{PickerState, PlColumn, PlaylistsState, songs_label};
@@ -16,7 +16,14 @@ const POPUP_WIDTH: u16 = 44;
 /// Most picker rows shown at once.
 const PICKER_ROWS: u16 = 10;
 
-pub fn draw(frame: &mut Frame, area: Rect, pl: &PlaylistsState, hits: &mut HitMap) {
+/// Draws the playlist columns, marking the song the player is on.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    pl: &PlaylistsState,
+    playing: Option<&str>,
+    hits: &mut HitMap,
+) {
     let cols: &[PlColumn] = if area.width >= WIDE {
         &[PlColumn::Lists, PlColumn::Tracks]
     } else if pl.focus == PlColumn::Lists {
@@ -33,7 +40,7 @@ pub fn draw(frame: &mut Frame, area: Rect, pl: &PlaylistsState, hits: &mut HitMa
         .collect();
     let rects = Layout::horizontal(weights).split(area);
     for (col, rect) in cols.iter().zip(rects.iter()) {
-        draw_column(frame, *rect, pl, *col, hits);
+        draw_column(frame, *rect, pl, *col, playing, hits);
     }
 }
 
@@ -42,6 +49,7 @@ fn draw_column(
     area: Rect,
     pl: &PlaylistsState,
     col: PlColumn,
+    playing: Option<&str>,
     hits: &mut HitMap,
 ) {
     let list = List::Playlists(col);
@@ -61,13 +69,11 @@ fn draw_column(
         PlColumn::Lists => body_of(&pl.lists, "No playlists. Press n to make one", |p| {
             (p.name.clone(), p.song_count.to_string())
         }),
-        PlColumn::Tracks => body_of(&pl.tracks, "No songs", |s| {
-            let mark = if s.starred { "♥ " } else { "  " };
-            (
-                format!("{mark}{}", s.title),
-                format_duration(f64::from(s.duration)),
-            )
-        }),
+        PlColumn::Tracks => body_of(&pl.tracks, "No songs", |s| track_row(s, playing)),
+    };
+    let is_playing = |i: usize| match col {
+        PlColumn::Tracks => is_playing_at(pl.tracks.loaded(), i, playing),
+        PlColumn::Lists => false,
     };
     match body {
         Body::Rows(rows) => draw_rows(
@@ -77,6 +83,7 @@ fn draw_column(
             pl.sel[col.index()],
             focused,
             list,
+            is_playing,
             hits,
         ),
         Body::Message(lines) => {
@@ -139,7 +146,16 @@ pub fn draw_picker(frame: &mut Frame, area: Rect, picker: &PickerState, hits: &m
     frame.render_widget(Clear, rect);
     frame.render_widget(block, rect);
     if !inner.is_empty() {
-        draw_rows(frame, inner, &rows, picker.sel, true, List::Picker, hits);
+        draw_rows(
+            frame,
+            inner,
+            &rows,
+            picker.sel,
+            true,
+            List::Picker,
+            |_| false,
+            hits,
+        );
     }
 }
 
@@ -192,7 +208,11 @@ mod tests {
         let mut pl = PlaylistsState::default();
         pl.lists = Loadable::Loaded(vec![playlist("Road Trip")]);
         pl.tracks = Loadable::Loaded(vec![song("Roygbiv")]);
-        let text = render(|f| draw(f, f.area(), &pl, &mut HitMap::default()), 90, 8);
+        let text = render(
+            |f| draw(f, f.area(), &pl, None, &mut HitMap::default()),
+            90,
+            8,
+        );
         for want in ["Playlists", "Road Trip", "Roygbiv", "2:05", "♥"] {
             assert!(text.contains(want), "missing {want:?} in\n{text}");
         }

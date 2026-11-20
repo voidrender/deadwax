@@ -1,4 +1,4 @@
-use super::library::fit;
+use super::library::{fit, song_mark};
 use super::theme;
 use super::widgets::{format_duration, pane, tail};
 use crate::app::library::Loadable;
@@ -10,13 +10,20 @@ use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph, Wrap};
 
-pub fn draw(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut HitMap) {
+/// Draws the search input and results, marking the song the player is on.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    search: &SearchState,
+    playing: Option<&str>,
+    hits: &mut HitMap,
+) {
     let [input_area, list_area] =
         Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
     draw_input(frame, input_area, search);
     hits.add(input_area, Target::SearchInput);
     hits.add(list_area, Target::Pane(List::Search));
-    draw_results(frame, list_area, search, hits);
+    draw_results(frame, list_area, search, playing, hits);
 }
 
 fn draw_input(frame: &mut Frame, area: Rect, search: &SearchState) {
@@ -41,7 +48,13 @@ fn draw_input(frame: &mut Frame, area: Rect, search: &SearchState) {
     frame.render_widget(Paragraph::new(Line::from(spans)).block(block), area);
 }
 
-fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut HitMap) {
+fn draw_results(
+    frame: &mut Frame,
+    area: Rect,
+    search: &SearchState,
+    playing: Option<&str>,
+    hits: &mut HitMap,
+) {
     let block = pane("Results", !search.editing);
     let area = {
         let inner = block.inner(area);
@@ -102,12 +115,14 @@ fn draw_results(frame: &mut Frame, area: Rect, search: &SearchState, hits: &mut 
                 }
                 SearchRow::Song(n) => {
                     let s = results.songs.get(n)?;
-                    let mark = if s.starred { "♥ " } else { "  " };
+                    let mark = song_mark(s, playing);
                     let right = format!("{}  {}", s.artist, format_duration(f64::from(s.duration)));
-                    (
-                        fit(&format!("{mark}{}", s.title), &right, width),
-                        Style::new(),
-                    )
+                    let style = if playing == Some(s.id.as_str()) {
+                        theme::accent()
+                    } else {
+                        Style::new()
+                    };
+                    (fit(&format!("{mark}{}", s.title), &right, width), style)
                 }
             };
             let style = if i == sel && !search.editing && !matches!(row, SearchRow::Header(_)) {
@@ -138,7 +153,7 @@ mod tests {
 
     fn render(s: &SearchState, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), s, &mut HitMap::default()))
+        term.draw(|f| draw(f, f.area(), s, None, &mut HitMap::default()))
             .unwrap();
         buffer_text(term.backend().buffer())
     }
