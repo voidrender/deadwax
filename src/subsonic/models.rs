@@ -60,6 +60,10 @@ pub struct Song {
     /// otherwise. Saved queue state stores a plain bool.
     #[serde(default, deserialize_with = "present_as_true")]
     pub starred: bool,
+    /// The playlist this song was queued from. Deadwax sets it, never the
+    /// server, so jumping to the playing track can open that playlist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub from_playlist: Option<String>,
 }
 
 fn present_as_true<'de, D: Deserializer<'de>>(d: D) -> Result<bool, D::Error> {

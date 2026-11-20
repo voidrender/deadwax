@@ -1,3 +1,4 @@
+use super::playlists::song_position;
 use super::sort::{self, AlbumSort, ArtistSort, TrackSort};
 use super::{ApiResult, App, Effect, Screen, View};
 use crate::player::PlayerCommand;
@@ -92,6 +93,9 @@ pub struct LibraryState {
     pending_album: Option<String>,
     /// An artist (and album) revealed while the artist list was loading.
     pending_reveal: Option<(String, Option<String>)>,
+    /// An album and song to select once they load, set by jumping to the
+    /// playing track.
+    pending_track: Option<(String, String)>,
     pub artist_sort: ArtistSort,
     pub album_sort: AlbumSort,
     /// Sort for the All Albums list, kept apart from `album_sort`.
@@ -121,6 +125,7 @@ impl Default for LibraryState {
             tracks_for: None,
             pending_album: None,
             pending_reveal: None,
+            pending_track: None,
             artist_sort: ArtistSort::default(),
             album_sort: AlbumSort::default(),
             all_albums_sort: AlbumSort::Name,
@@ -162,6 +167,38 @@ impl LibraryState {
     /// Used by Search. While the artist list loads, the target is kept and
     /// revealed once it arrives.
     pub fn reveal(&mut self, artist_id: &str, album_id: Option<&str>) -> Vec<Effect> {
+        self.pending_track = None;
+        self.reveal_at(artist_id, album_id)
+    }
+
+    /// Opens album `album_id` with the cursor on `song_id`. The album is
+    /// looked up under `artist_id`, or under All Albums when that artist
+    /// is not listed or does not hold it (as with a compilation).
+    pub fn reveal_track(
+        &mut self,
+        artist_id: Option<&str>,
+        album_id: &str,
+        song_id: &str,
+    ) -> Vec<Effect> {
+        if self.tracks_for.as_deref() == Some(album_id) {
+            self.focus = Column::Tracks;
+            if let Some(i) = song_position(self.tracks.loaded(), song_id) {
+                self.sel[2] = i;
+                self.pending_track = None;
+                return Vec::new();
+            }
+            if self.tracks == Loadable::Loading {
+                self.pending_track = Some((album_id.to_string(), song_id.to_string()));
+                return Vec::new();
+            }
+        }
+        self.pending_track = Some((album_id.to_string(), song_id.to_string()));
+        let mut effects = self.start();
+        effects.extend(self.reveal_at(artist_id.unwrap_or(ALL_ALBUMS_ID), Some(album_id)));
+        effects
+    }
+
+    fn reveal_at(&mut self, artist_id: &str, album_id: Option<&str>) -> Vec<Effect> {
         if self.artists == Loadable::Loading {
             self.pending_reveal = Some((artist_id.to_string(), album_id.map(str::to_string)));
             return Vec::new();
@@ -169,7 +206,14 @@ impl LibraryState {
         let Some(rows) = self.artists.loaded() else {
             return Vec::new();
         };
-        let Some(idx) = rows.iter().position(|r| r.id() == artist_id) else {
+        let find = |id: &str| rows.iter().position(|r| r.id() == id);
+        let found = find(artist_id).or_else(|| {
+            // A jump still finds the album under All Albums.
+            self.pending_track
+                .as_ref()
+                .and_then(|_| find(ALL_ALBUMS_ID))
+        });
+        let Some(idx) = found else {
             return Vec::new();
         };
         self.sel[0] = idx;
@@ -243,6 +287,7 @@ impl LibraryState {
                 self.albums_for = Some(ALL_ALBUMS_ID.to_string());
                 if let Some(albums) = self.all_albums.clone() {
                     self.albums = Loadable::Loaded(albums);
+                    self.place_pending_album();
                     return self.select_album();
                 }
                 self.albums = Loadable::Loading;
@@ -298,7 +343,7 @@ impl LibraryState {
                 self.artists = Loadable::Loaded(rows);
                 self.sel[0] = 0;
                 if let Some((artist, album)) = self.pending_reveal.take() {
-                    let effects = self.reveal(&artist, album.as_deref());
+                    let effects = self.reveal_at(&artist, album.as_deref());
                     if !effects.is_empty() {
                         return Ok(effects);
                     }
@@ -336,18 +381,53 @@ impl LibraryState {
         match result {
             Ok(mut albums) => {
                 sort::sort_albums(&mut albums, self.albums_sort());
-                if let Some(want) = self.pending_album.take()
-                    && let Some(i) = albums.iter().position(|a| a.id == want)
-                {
-                    self.sel[1] = i;
-                }
+                let missing = self
+                    .pending_album
+                    .as_ref()
+                    .filter(|want| !albums.iter().any(|a| &a.id == *want))
+                    .cloned();
                 self.albums = Loadable::Loaded(albums);
+                if let Some(want) = missing
+                    && self.pending_track.is_some()
+                    && id != ALL_ALBUMS_ID
+                {
+                    // The artist does not hold the album. Look in All Albums.
+                    self.pending_album = None;
+                    return Ok(self.reveal_at(ALL_ALBUMS_ID, Some(&want)));
+                }
+                self.place_pending_album();
                 Ok(self.select_album())
             }
             Err(msg) => {
                 self.albums = Loadable::Failed(msg.clone());
                 Err(msg)
             }
+        }
+    }
+
+    /// Selects the album a reveal asked for, once the albums are in.
+    fn place_pending_album(&mut self) {
+        if let Some(want) = self.pending_album.take()
+            && let Some(i) = self
+                .albums
+                .loaded()
+                .and_then(|a| a.iter().position(|a| a.id == want))
+        {
+            self.sel[1] = i;
+        }
+    }
+
+    /// Moves the cursor to the pending song once its album's tracks are in.
+    fn place_pending_track(&mut self) {
+        let Some((album_id, song_id)) = self.pending_track.take() else {
+            return;
+        };
+        if self.tracks_for.as_deref() != Some(&album_id) {
+            self.pending_track = Some((album_id, song_id));
+            return;
+        }
+        if let Some(i) = song_position(self.tracks.loaded(), &song_id) {
+            self.sel[2] = i;
         }
     }
 
@@ -365,6 +445,7 @@ impl LibraryState {
                 self.track_ranks = sort::rank(songs.iter().map(|s| s.id.as_str()));
                 sort::sort_tracks(&mut songs, self.track_sort, &self.track_ranks);
                 self.tracks = Loadable::Loaded(songs);
+                self.place_pending_track();
                 Ok(())
             }
             Err(msg) => {
@@ -471,6 +552,9 @@ impl LibraryState {
         if new == old {
             return Vec::new();
         }
+        // The user moved on, so a reveal still loading is dropped.
+        self.pending_album = None;
+        self.pending_track = None;
         self.sel[col.index()] = new;
         match col {
             Column::Artists => self.select_artist(),
@@ -1367,6 +1451,122 @@ mod tests {
         );
         assert_eq!(app.library.sel[1], 1);
         assert_eq!(app.library.tracks_for.as_deref(), Some("x"));
+    }
+
+    fn play(app: &mut App, song: Song) {
+        app.handle_event(AppEvent::Snapshot(crate::player::PlayerSnapshot {
+            items: vec![crate::player::queue::QueueItem { uid: 0, song }],
+            current: Some(0),
+            ..Default::default()
+        }));
+    }
+
+    fn on_album(id: &str, artist: Option<&str>, album: &str) -> Song {
+        Song {
+            artist_id: artist.map(Into::into),
+            album_id: Some(album.into()),
+            ..song(id)
+        }
+    }
+
+    #[test]
+    fn g_opens_the_playing_album_and_selects_the_track() {
+        let mut app = loaded_app();
+        app.view = View::Queue;
+        app.now_playing = true;
+        play(&mut app, on_album("t2", Some("b"), "b2"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadArtist("b".into())]);
+        assert_eq!(app.view, View::Library);
+        assert!(!app.now_playing);
+        assert_eq!(app.library.focus, Column::Tracks);
+        let fx = api(
+            &mut app,
+            ApiResult::Artist {
+                id: "b".into(),
+                result: Ok(vec![album("b1"), album("b2")]),
+            },
+        );
+        assert_eq!(fx, [Effect::LoadAlbum("b2".into())]);
+        api(
+            &mut app,
+            ApiResult::Album {
+                id: "b2".into(),
+                result: Ok(vec![song("t1"), song("t2"), song("t3")]),
+            },
+        );
+        assert_eq!(app.library.sel, [3, 1, 1]);
+    }
+
+    #[test]
+    fn g_on_the_shown_album_only_moves_the_cursor() {
+        let mut app = loaded_app();
+        play(&mut app, on_album("s2", Some("a"), "a1"));
+        assert!(press(&mut app, 'g').is_empty());
+        assert_eq!(app.library.focus, Column::Tracks);
+        assert_eq!(app.library.sel[2], 2);
+    }
+
+    #[test]
+    fn g_finds_an_album_by_an_unlisted_artist_in_all_albums() {
+        let mut app = loaded_app();
+        play(&mut app, on_album("t1", Some("guest"), "comp"));
+        // Passing the All Albums row on the way to artist a already asked
+        // for every album, so the jump waits on that request.
+        assert!(press(&mut app, 'g').is_empty());
+        assert_eq!(app.library.sel[0], 1);
+        assert_eq!(app.library.albums_for.as_deref(), Some(ALL_ALBUMS_ID));
+        let fx = api(&mut app, all_albums(vec![album("a1"), album("comp")]));
+        assert_eq!(fx, [Effect::LoadAlbum("comp".into())]);
+        api(
+            &mut app,
+            ApiResult::Album {
+                id: "comp".into(),
+                result: Ok(vec![song("t0"), song("t1")]),
+            },
+        );
+        assert_eq!(app.library.sel[2], 1);
+    }
+
+    #[test]
+    fn g_falls_back_to_all_albums_when_the_artist_lacks_the_album() {
+        let mut app = loaded_app();
+        play(&mut app, on_album("t1", Some("b"), "comp"));
+        press(&mut app, 'g');
+        let fx = api(
+            &mut app,
+            ApiResult::Artist {
+                id: "b".into(),
+                result: Ok(vec![album("b1")]),
+            },
+        );
+        assert!(fx.is_empty());
+        assert_eq!(app.library.sel[0], 1);
+        let fx = api(&mut app, all_albums(vec![album("b1"), album("comp")]));
+        assert_eq!(fx, [Effect::LoadAlbum("comp".into())]);
+    }
+
+    #[test]
+    fn moving_before_a_jump_lands_drops_it() {
+        let mut app = loaded_app();
+        play(&mut app, on_album("t2", Some("b"), "b2"));
+        press(&mut app, 'g');
+        app.library.focus = Column::Artists;
+        press(&mut app, 'k');
+        api(
+            &mut app,
+            ApiResult::Artist {
+                id: "a".into(),
+                result: Ok(vec![album("a1"), album("b2")]),
+            },
+        );
+        assert_eq!(app.library.sel[1], 0);
+    }
+
+    #[test]
+    fn g_with_nothing_playing_says_so() {
+        let mut app = loaded_app();
+        assert!(press(&mut app, 'g').is_empty());
+        assert_eq!(app.status_text(), Some("Nothing is playing"));
     }
 
     #[test]

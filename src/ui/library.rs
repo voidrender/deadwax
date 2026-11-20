@@ -2,6 +2,7 @@ use super::theme;
 use super::widgets::{display_width, format_duration, pane, truncate};
 use crate::app::library::{ArtistRow, Column, LibraryState, Loadable};
 use crate::app::mouse::{HitMap, List, Target, fingerprint};
+use crate::subsonic::Song;
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::Line;
@@ -10,7 +11,15 @@ use ratatui::widgets::{Paragraph, Wrap};
 /// Below this width only the focused column and its parent are shown.
 const WIDE: u16 = 80;
 
-pub fn draw(frame: &mut Frame, area: Rect, lib: &LibraryState, hits: &mut HitMap) {
+/// Draws the library columns. `playing` is the id of the song the player
+/// is on, which is marked wherever it is listed.
+pub fn draw(
+    frame: &mut Frame,
+    area: Rect,
+    lib: &LibraryState,
+    playing: Option<&str>,
+    hits: &mut HitMap,
+) {
     let cols: &[Column] = if area.width >= WIDE {
         &[Column::Artists, Column::Albums, Column::Tracks]
     } else {
@@ -28,11 +37,18 @@ pub fn draw(frame: &mut Frame, area: Rect, lib: &LibraryState, hits: &mut HitMap
         .collect();
     let rects = Layout::horizontal(weights).split(area);
     for (col, rect) in cols.iter().zip(rects.iter()) {
-        draw_column(frame, *rect, lib, *col, hits);
+        draw_column(frame, *rect, lib, *col, playing, hits);
     }
 }
 
-fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column, hits: &mut HitMap) {
+fn draw_column(
+    frame: &mut Frame,
+    area: Rect,
+    lib: &LibraryState,
+    col: Column,
+    playing: Option<&str>,
+    hits: &mut HitMap,
+) {
     let list = List::Library(col);
     hits.add(area, Target::Pane(list));
     let focused = lib.focus == col;
@@ -60,20 +76,61 @@ fn draw_column(frame: &mut Frame, area: Rect, lib: &LibraryState, col: Column, h
                 a.year.map(|y| y.to_string()).unwrap_or_default(),
             )
         }),
-        Column::Tracks => body_of(&lib.tracks, "No songs", |s| {
-            let mark = if s.starred { "♥ " } else { "  " };
-            (
-                format!("{mark}{}", s.title),
-                format_duration(f64::from(s.duration)),
-            )
-        }),
+        Column::Tracks => body_of(&lib.tracks, "No songs", |s| track_row(s, playing)),
+    };
+    let is_playing = |i: usize| match col {
+        Column::Tracks => is_playing_at(lib.tracks.loaded(), i, playing),
+        Column::Artists | Column::Albums => false,
     };
     match body {
-        Body::Rows(rows) => draw_rows(frame, inner, &rows, sel, focused, list, hits),
+        Body::Rows(rows) => {
+            let content = match col {
+                Column::Tracks => tracks_content(lib.tracks.loaded()),
+                Column::Artists | Column::Albums => fingerprint(&rows),
+            };
+            draw_rows(
+                frame, inner, &rows, sel, focused, list, is_playing, content, hits,
+            );
+        }
         Body::Message(lines) => {
             frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), inner);
         }
     }
+}
+
+/// Marks the song the player is on. It takes the place of the heart,
+/// which the strip still shows for the current track.
+pub(super) const PLAYING_MARK: &str = "▶ ";
+
+/// The two-column mark before a song title: playing, starred, or blank.
+pub(super) fn song_mark(song: &Song, playing: Option<&str>) -> &'static str {
+    if playing == Some(song.id.as_str()) {
+        PLAYING_MARK
+    } else if song.starred {
+        "♥ "
+    } else {
+        "  "
+    }
+}
+
+/// A track row: its mark and title, and its length on the right.
+pub(super) fn track_row(song: &Song, playing: Option<&str>) -> (String, String) {
+    (
+        format!("{}{}", song_mark(song, playing), song.title),
+        format_duration(f64::from(song.duration)),
+    )
+}
+
+/// What a track list's scroll position follows. It hashes the rows as
+/// drawn with nothing playing, so a track change does not count as new
+/// content and pull the list back to the cursor.
+pub(super) fn tracks_content(songs: Option<&Vec<Song>>) -> u64 {
+    fingerprint(songs.into_iter().flatten().map(|s| track_row(s, None)))
+}
+
+/// Whether row `i` of `songs` is the song the player is on.
+pub(super) fn is_playing_at(songs: Option<&Vec<Song>>, i: usize, playing: Option<&str>) -> bool {
+    playing.is_some_and(|id| songs.and_then(|s| s.get(i)).is_some_and(|s| s.id == id))
 }
 
 pub(super) enum Body {
@@ -102,7 +159,13 @@ pub(super) fn body_of<T>(
 }
 
 /// Draws the rows of `list` that fit, scrolled to show `sel`, and records
-/// them for clicks.
+/// them for clicks. Rows for which `is_playing` holds are drawn in the
+/// accent color unless selected. A change in `content` scrolls the list
+/// back to `sel`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "each list passes its own rows, selection, playing test and content hash"
+)]
 pub(super) fn draw_rows(
     frame: &mut Frame,
     area: Rect,
@@ -110,12 +173,14 @@ pub(super) fn draw_rows(
     sel: usize,
     focused: bool,
     list: List,
+    is_playing: impl Fn(usize) -> bool,
+    content: u64,
     hits: &mut HitMap,
 ) {
     let height = usize::from(area.height);
     let width = usize::from(area.width);
     let sel = sel.min(rows.len().saturating_sub(1));
-    let offset = hits.scroll(list, sel, rows.len(), height, fingerprint(rows));
+    let offset = hits.scroll(list, sel, rows.len(), height, content);
     let lines: Vec<Line> = rows
         .iter()
         .enumerate()
@@ -125,6 +190,7 @@ pub(super) fn draw_rows(
             let style = match (i == sel, focused) {
                 (true, true) => theme::selected(),
                 (true, false) => theme::accent_bold(),
+                (false, _) if is_playing(i) => theme::accent(),
                 (false, _) => ratatui::style::Style::new(),
             };
             Line::styled(fit(left, right, width), style)
@@ -173,7 +239,7 @@ mod tests {
 
     fn render(lib: &LibraryState, w: u16, h: u16) -> String {
         let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
-        term.draw(|f| draw(f, f.area(), lib, &mut HitMap::default()))
+        term.draw(|f| draw(f, f.area(), lib, None, &mut HitMap::default()))
             .unwrap();
         buffer_text(term.backend().buffer())
     }
@@ -246,6 +312,41 @@ mod tests {
     }
 
     #[test]
+    fn playing_track_is_marked_and_accented() {
+        use crate::subsonic::Song;
+        let mut lib = state();
+        let song = |id: &str, title: &str, starred: bool| Song {
+            id: id.into(),
+            title: title.into(),
+            starred,
+            ..Default::default()
+        };
+        lib.tracks = Loadable::Loaded(vec![
+            song("1", "Music Is Math", true),
+            song("2", "Gyroscope", true),
+        ]);
+        let mut term = Terminal::new(TestBackend::new(100, 6)).unwrap();
+        term.draw(|f| draw(f, f.area(), &lib, Some("2"), &mut HitMap::default()))
+            .unwrap();
+        let buf = term.backend().buffer();
+        let text = buffer_text(buf);
+        assert!(text.contains("♥ Music Is Math"), "{text}");
+        assert!(text.contains("▶ Gyroscope"), "{text}");
+        let row = text.lines().position(|l| l.contains("Gyroscope")).unwrap();
+        let col = text
+            .lines()
+            .nth(row)
+            .unwrap()
+            .chars()
+            .position(|c| c == '▶');
+        let cell = &buf[(
+            u16::try_from(col.unwrap()).unwrap(),
+            u16::try_from(row).unwrap(),
+        )];
+        assert_eq!(cell.fg, theme::ACCENT);
+    }
+
+    #[test]
     fn failed_load_shows_error_and_retry_hint() {
         let mut lib = LibraryState::default();
         lib.artists = Loadable::Failed("network error: timeout".into());
@@ -304,6 +405,8 @@ mod tests {
                 0,
                 false,
                 List::Search,
+                |_| false,
+                fingerprint(&rows),
                 &mut HitMap::default(),
             );
         })

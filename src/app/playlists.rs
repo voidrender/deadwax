@@ -43,6 +43,12 @@ pub struct PlaylistsState {
     /// loading and other edits were pending. It is applied once they
     /// settle, so the playlist doesn't stay loading.
     held_reload: Option<(String, Result<Vec<Song>, String>)>,
+    /// A playlist and song to select once they load, set by jumping to the
+    /// playing track.
+    pending_track: Option<(String, Box<Song>)>,
+    /// The song of a jump whose playlist was missing when the playlists
+    /// arrived, so the app can open its album instead.
+    missed_jump: Option<Box<Song>>,
 }
 
 /// State of the add-to-playlist popup. Row 0 is "+ New playlist" and row
@@ -77,6 +83,11 @@ impl PickerState {
 pub enum TextPurpose {
     NewPlaylist { song_ids: Vec<String> },
     RenamePlaylist { id: String },
+}
+
+/// Where `song_id` first appears in `songs`.
+pub(super) fn song_position(songs: Option<&Vec<Song>>, song_id: &str) -> Option<usize> {
+    songs?.iter().position(|s| s.id == song_id)
 }
 
 pub fn songs_label(n: usize) -> String {
@@ -136,6 +147,58 @@ impl PlaylistsState {
         }
     }
 
+    /// Opens playlist `id` with the cursor on `song`, loading what is
+    /// missing first.
+    pub fn reveal(&mut self, id: &str, song: &Song) -> Vec<Effect> {
+        self.focus = PlColumn::Tracks;
+        self.missed_jump = None;
+        if self.tracks_for.as_deref() == Some(id) {
+            if let Some(i) = song_position(self.tracks.loaded(), &song.id) {
+                self.sel[1] = i;
+                self.pending_track = None;
+                return Vec::new();
+            }
+            if self.tracks == Loadable::Loading {
+                self.pending_track = Some((id.to_string(), Box::new(song.clone())));
+                return Vec::new();
+            }
+        }
+        self.pending_track = Some((id.to_string(), Box::new(song.clone())));
+        let mut effects = self.start();
+        if let Some(i) = self
+            .lists
+            .loaded()
+            .and_then(|l| l.iter().position(|p| p.id == id))
+        {
+            self.sel[0] = i;
+            effects.extend(self.select_list());
+        }
+        effects
+    }
+
+    /// Moves the cursor to the pending song once its playlist's tracks are
+    /// in.
+    fn place_pending_track(&mut self) {
+        let Some((id, song)) = self.pending_track.take() else {
+            return;
+        };
+        if self.tracks_for.as_deref() != Some(&id) {
+            self.pending_track = Some((id, song));
+            return;
+        }
+        if let Some(i) = song_position(self.tracks.loaded(), &song.id) {
+            self.sel[1] = i;
+        }
+    }
+
+    /// `songs` marked as queued from the shown playlist.
+    fn tagged(&self, mut songs: Vec<Song>) -> Vec<Song> {
+        for song in &mut songs {
+            song.from_playlist.clone_from(&self.tracks_for);
+        }
+        songs
+    }
+
     fn select_list(&mut self) -> Vec<Effect> {
         self.tracks = Loadable::NotLoaded;
         self.tracks_for = None;
@@ -173,6 +236,17 @@ impl PlaylistsState {
                 {
                     self.sel[0] = i;
                 }
+                if let Some((want, _)) = &self.pending_track {
+                    if let Some(i) = self
+                        .lists
+                        .loaded()
+                        .and_then(|l| l.iter().position(|p| &p.id == want))
+                    {
+                        self.sel[0] = i;
+                    } else {
+                        self.missed_jump = self.pending_track.take().map(|(_, song)| song);
+                    }
+                }
                 let now = self.selected_list().map(|p| p.id.clone());
                 if first_load || now != self.tracks_for {
                     Ok(self.select_list())
@@ -197,6 +271,7 @@ impl PlaylistsState {
         match result {
             Ok(songs) => {
                 self.tracks = Loadable::Loaded(songs);
+                self.place_pending_track();
                 Ok(())
             }
             Err(msg) => {
@@ -224,6 +299,7 @@ impl PlaylistsState {
             Ok(songs) => {
                 self.sel[1] = self.sel[1].min(songs.len().saturating_sub(1));
                 self.tracks = Loadable::Loaded(songs);
+                self.place_pending_track();
                 Ok(())
             }
             Err(msg) => {
@@ -357,6 +433,8 @@ impl PlaylistsState {
         if new == old {
             return Vec::new();
         }
+        self.pending_track = None;
+        self.missed_jump = None;
         self.sel[col.index()] = new;
         match col {
             PlColumn::Lists => self.select_list(),
@@ -387,7 +465,7 @@ impl PlaylistsState {
         match self.tracks.loaded() {
             Some(songs) if start < songs.len() => {
                 vec![Effect::Player(PlayerCommand::PlayQueue {
-                    songs: songs.clone(),
+                    songs: self.tagged(songs.clone()),
                     start,
                 })]
             }
@@ -404,6 +482,7 @@ impl PlaylistsState {
         if songs.is_empty() {
             return Vec::new();
         }
+        let songs = self.tagged(songs);
         vec![Effect::Player(if next {
             PlayerCommand::PlayNext(songs)
         } else {
@@ -639,10 +718,17 @@ impl App {
                     p.lists = self.playlists.lists.clone();
                     p.sel = p.sel.min(p.last_row());
                 }
-                applied.unwrap_or_else(|msg| {
+                let mut effects = applied.unwrap_or_else(|msg| {
                     self.set_status(format!("Couldn't load playlists: {msg}"));
                     Vec::new()
-                })
+                });
+                // The jump's playlist is gone, so show the track's album.
+                if let Some(song) = self.playlists.missed_jump.take()
+                    && self.view == View::Playlists
+                {
+                    effects.extend(self.go_to_song(&song));
+                }
+                effects
             }
             ApiResult::Playlist { id, result } => {
                 if self.playlists.finish_load(&id) {
@@ -1170,6 +1256,165 @@ mod tests {
             ApiResult::Playlists(Ok(vec![playlist("pl2", "Jazz")])),
         );
         assert_eq!(effects, [Effect::LoadPlaylist("pl2".into())]);
+    }
+
+    fn play(app: &mut App, song: Song) {
+        app.handle_event(AppEvent::Snapshot(crate::player::PlayerSnapshot {
+            items: vec![crate::player::queue::QueueItem { uid: 0, song }],
+            current: Some(0),
+            ..Default::default()
+        }));
+    }
+
+    fn from(id: &str, playlist: &str) -> Song {
+        Song {
+            from_playlist: Some(playlist.into()),
+            album_id: Some("al".into()),
+            ..song(id)
+        }
+    }
+
+    #[test]
+    fn queued_songs_remember_their_playlist() {
+        let mut app = app_with_playlist();
+        let effects = key(&mut app, KeyCode::Enter);
+        let [Effect::Player(PlayerCommand::PlayQueue { songs, .. })] = effects.as_slice() else {
+            panic!("{effects:?}");
+        };
+        assert!(
+            songs
+                .iter()
+                .all(|s| s.from_playlist.as_deref() == Some("pl1"))
+        );
+        let effects = press(&mut app, 'e');
+        let tagged = Song {
+            from_playlist: Some("pl1".into()),
+            ..song("a")
+        };
+        assert_eq!(
+            effects,
+            [Effect::Player(PlayerCommand::Append(vec![tagged]))]
+        );
+    }
+
+    #[test]
+    fn g_opens_the_playlist_a_track_was_queued_from() {
+        let mut app = app_with_playlist();
+        app.view = View::Library;
+        play(&mut app, from("y", "pl2"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadPlaylist("pl2".into())]);
+        assert_eq!(app.view, View::Playlists);
+        assert_eq!(app.playlists.sel[0], 1);
+        assert_eq!(app.playlists.focus, PlColumn::Tracks);
+        api(
+            &mut app,
+            ApiResult::Playlist {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("y")]),
+            },
+        );
+        assert_eq!(app.playlists.sel[1], 1);
+    }
+
+    #[test]
+    fn g_selects_the_track_when_a_reload_brings_the_playlist() {
+        let mut app = app_with_playlist();
+        play(&mut app, from("y", "pl2"));
+        press(&mut app, 'g');
+        api(
+            &mut app,
+            ApiResult::PlaylistReloaded {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("y")]),
+            },
+        );
+        assert_eq!(app.playlists.sel[1], 1);
+    }
+
+    #[test]
+    fn g_falls_back_to_the_album_when_the_loaded_lists_lack_the_playlist() {
+        let mut app = App::new();
+        play(&mut app, from("y", "deleted"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadPlaylists]);
+        let fx = api(
+            &mut app,
+            ApiResult::Playlists(Ok(vec![playlist("pl1", "Mix")])),
+        );
+        assert_eq!(
+            fx,
+            [Effect::LoadPlaylist("pl1".into()), Effect::LoadArtists]
+        );
+        assert_eq!(app.view, View::Library);
+    }
+
+    #[test]
+    fn the_album_fallback_uses_the_jumped_track_not_the_next_one() {
+        let mut app = App::new();
+        app.on_start();
+        api(&mut app, ApiResult::Artists(Ok(Vec::new())));
+        play(&mut app, from("y", "deleted"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadPlaylists]);
+        // Playback moves on before the playlists arrive.
+        play(
+            &mut app,
+            Song {
+                album_id: Some("other".into()),
+                ..song("z")
+            },
+        );
+        api(
+            &mut app,
+            ApiResult::Playlists(Ok(vec![playlist("pl1", "Mix")])),
+        );
+        assert_eq!(app.view, View::Library);
+        let album = |id: &str| crate::subsonic::Album {
+            id: id.into(),
+            ..Default::default()
+        };
+        let fx = api(
+            &mut app,
+            ApiResult::Artist {
+                id: crate::app::library::ALL_ALBUMS_ID.into(),
+                result: Ok(vec![album("al"), album("other")]),
+            },
+        );
+        assert_eq!(fx, [Effect::LoadAlbum("al".into())]);
+    }
+
+    #[test]
+    fn g_on_the_shown_playlist_only_moves_the_cursor() {
+        let mut app = app_with_playlist();
+        play(&mut app, from("c", "pl1"));
+        assert!(press(&mut app, 'g').is_empty());
+        assert_eq!(app.playlists.sel[1], 2);
+    }
+
+    #[test]
+    fn g_waits_for_the_playlists_to_load() {
+        let mut app = App::new();
+        play(&mut app, from("y", "pl2"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadPlaylists]);
+        let fx = api(
+            &mut app,
+            ApiResult::Playlists(Ok(vec![playlist("pl1", "Mix"), playlist("pl2", "Jazz")])),
+        );
+        assert_eq!(fx, [Effect::LoadPlaylist("pl2".into())]);
+        api(
+            &mut app,
+            ApiResult::Playlist {
+                id: "pl2".into(),
+                result: Ok(vec![song("x"), song("y")]),
+            },
+        );
+        assert_eq!(app.playlists.sel, [1, 1]);
+    }
+
+    #[test]
+    fn g_falls_back_to_the_album_when_the_playlist_is_gone() {
+        let mut app = app_with_playlist();
+        play(&mut app, from("y", "deleted"));
+        assert_eq!(press(&mut app, 'g'), [Effect::LoadArtists]);
+        assert_eq!(app.view, View::Library);
     }
 
     #[test]

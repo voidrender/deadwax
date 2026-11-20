@@ -676,6 +676,49 @@ impl App {
         self.player.current.and_then(|i| self.player.items.get(i))
     }
 
+    /// The id of the song the player is on, playing or paused.
+    pub fn playing_id(&self) -> Option<&str> {
+        self.current_item().map(|item| item.song.id.as_str())
+    }
+
+    /// `g`: opens the playlist the current track was queued from, or else
+    /// its album, with the cursor on the track.
+    fn go_to_playing(&mut self) -> Vec<Effect> {
+        let Some(song) = self.current_item().map(|item| item.song.clone()) else {
+            self.set_status("Nothing is playing");
+            return Vec::new();
+        };
+        self.go_to_song(&song)
+    }
+
+    /// Opens the playlist `song` was queued from, or else its album, with
+    /// the cursor on it.
+    fn go_to_song(&mut self, song: &Song) -> Vec<Effect> {
+        // A playlist deleted since the song was queued falls back to the
+        // album. While the lists load, the playlist is assumed to exist.
+        let playlist = song.from_playlist.as_deref().filter(|id| {
+            self.playlists
+                .lists
+                .loaded()
+                .is_none_or(|lists| lists.iter().any(|p| p.id == *id))
+        });
+        if let Some(id) = playlist {
+            self.view = View::Playlists;
+            self.now_playing = false;
+            self.help = false;
+            return self.playlists.reveal(id, song);
+        }
+        let Some(album_id) = song.album_id.as_deref() else {
+            self.set_status("The playing track has no album to show");
+            return Vec::new();
+        };
+        self.view = View::Library;
+        self.now_playing = false;
+        self.help = false;
+        self.library
+            .reveal_track(song.artist_id.as_deref(), album_id, &song.id)
+    }
+
     fn handle_api(&mut self, result: ApiResult) -> Vec<Effect> {
         match result {
             ApiResult::LoggedIn { client, saved_to } => {
@@ -819,6 +862,7 @@ impl App {
                 self.now_playing = !self.now_playing;
                 return Vec::new();
             }
+            Action::GoToPlaying => return self.go_to_playing(),
             Action::ToggleHelp => {
                 self.help = !self.help;
                 return Vec::new();
