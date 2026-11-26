@@ -762,6 +762,7 @@ dependencies = [
  "unicode-width",
  "url",
  "wiremock",
+ "zbus 6.2.1",
 ]
 
 [[package]]
@@ -4623,6 +4624,7 @@ dependencies = [
  "serde",
  "serde_repr",
  "socket2",
+ "tokio",
  "uds_windows",
  "uuid 1.29.2",
  "windows-sys 0.61.2",
