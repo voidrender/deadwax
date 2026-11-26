@@ -165,7 +165,11 @@ impl<B: AudioBackend> Engine<B> {
                 self.queue.insert_next(songs);
                 self.sync_next().await;
             }
-            PlayerCommand::TogglePause => self.toggle_pause(&mut ev).await,
+            PlayerCommand::TogglePause => {
+                let paused = self.status == Status::Playing;
+                self.set_paused(paused, &mut ev).await;
+            }
+            PlayerCommand::SetPaused(paused) => self.set_paused(paused, &mut ev).await,
             PlayerCommand::Next => {
                 let has_next = self.queue.pos.is_some_and(|p| {
                     p + 1 < self.queue.order.len() || self.queue.repeat == RepeatMode::All
@@ -468,16 +472,20 @@ impl<B: AudioBackend> Engine<B> {
         }
     }
 
-    async fn toggle_pause(&mut self, ev: &mut Vec<EngineEvent>) {
+    /// Pauses or resumes, doing nothing when already in that state.
+    /// Resuming a stopped queue starts it.
+    async fn set_paused(&mut self, paused: bool, ev: &mut Vec<EngineEvent>) {
         match self.status {
             Status::Stopped => {
-                if self.queue.current().is_none() && self.queue.jump_to(0).is_none() {
+                if paused || (self.queue.current().is_none() && self.queue.jump_to(0).is_none()) {
                     return;
                 }
                 self.play_current(None, false, ev).await;
             }
             Status::Playing | Status::Paused => {
-                let paused = self.status == Status::Playing;
+                if paused == (self.status == Status::Paused) {
+                    return;
+                }
                 match self.backend.set_pause(paused).await {
                     Ok(()) => {
                         self.pause_set(paused);
@@ -1268,6 +1276,27 @@ mod tests {
                 .await
                 .is_empty()
         );
+        assert_eq!(e.snapshot().status, Status::Playing);
+    }
+
+    #[tokio::test]
+    async fn set_paused_changes_only_a_differing_state() {
+        let mut e = playing(3).await;
+        assert!(
+            e.handle_command(PlayerCommand::SetPaused(false))
+                .await
+                .is_empty()
+        );
+        assert!(e.backend.calls.is_empty());
+        // A second pause sent before the first is reported stays paused.
+        let first = e.handle_command(PlayerCommand::SetPaused(true)).await;
+        let second = e.handle_command(PlayerCommand::SetPaused(true)).await;
+        assert_eq!(first, [EngineEvent::PauseChanged(true)]);
+        assert!(second.is_empty());
+        assert_eq!(e.backend.calls, [Call::Pause(true)]);
+        assert_eq!(e.snapshot().status, Status::Paused);
+        let ev = e.handle_command(PlayerCommand::SetPaused(false)).await;
+        assert_eq!(ev, [EngineEvent::PauseChanged(false)]);
         assert_eq!(e.snapshot().status, Status::Playing);
     }
 

@@ -1,6 +1,6 @@
 //! MPRIS method calls, as player commands.
 
-use super::state::{MprisState, Playback};
+use super::state::MprisState;
 use crate::player::PlayerCommand;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -25,17 +25,12 @@ pub fn commands(c: Control, state: &MprisState) -> Vec<PlayerCommand> {
     if !state.has_track() {
         return Vec::new();
     }
-    let toggle_unless = |already: Playback| {
-        if state.status() == already {
-            Vec::new()
-        } else {
-            vec![PlayerCommand::TogglePause]
-        }
-    };
     match c {
         Control::PlayPause => vec![PlayerCommand::TogglePause],
-        Control::Play => toggle_unless(Playback::Playing),
-        Control::Pause => toggle_unless(Playback::Paused),
+        // Not toggles: `state` can lag behind the engine, and a toggle
+        // sent from a stale state would undo an earlier one.
+        Control::Play => vec![PlayerCommand::SetPaused(false)],
+        Control::Pause => vec![PlayerCommand::SetPaused(true)],
         // Deadwax has no stopped-but-loaded state to go to.
         Control::Stop => Vec::new(),
         Control::Next => vec![PlayerCommand::Next],
@@ -90,14 +85,23 @@ mod tests {
     }
 
     #[test]
-    fn play_and_pause_toggle_only_when_needed() {
-        let toggle = [PlayerCommand::TogglePause];
-        assert_eq!(commands(Control::Play, &paused()), toggle);
-        assert!(commands(Control::Pause, &paused()).is_empty());
-        assert_eq!(commands(Control::Pause, &playing()), toggle);
-        assert!(commands(Control::Play, &playing()).is_empty());
-        assert_eq!(commands(Control::PlayPause, &playing()), toggle);
-        assert_eq!(commands(Control::PlayPause, &paused()), toggle);
+    fn play_and_pause_set_the_state_and_play_pause_toggles() {
+        // The engine applies these at execution time, so they hold even
+        // when this state is behind.
+        for s in [playing(), paused()] {
+            assert_eq!(
+                commands(Control::Play, &s),
+                [PlayerCommand::SetPaused(false)]
+            );
+            assert_eq!(
+                commands(Control::Pause, &s),
+                [PlayerCommand::SetPaused(true)]
+            );
+            assert_eq!(
+                commands(Control::PlayPause, &s),
+                [PlayerCommand::TogglePause]
+            );
+        }
     }
 
     #[test]

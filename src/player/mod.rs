@@ -24,6 +24,10 @@ pub enum PlayerCommand {
     Append(Vec<Song>),
     PlayNext(Vec<Song>),
     TogglePause,
+    /// Pauses or resumes. Unlike `TogglePause`, sending it twice leaves the
+    /// same state, so a caller working from an old snapshot can't undo
+    /// itself.
+    SetPaused(bool),
     Next,
     Prev,
     SeekRelative(f64),
