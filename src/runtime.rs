@@ -121,6 +121,9 @@ pub struct Ctx {
     /// Engine events are copied here for the integration hub, stamped with
     /// the unix time they arrived. `None` until `run` starts it.
     hub: Option<mpsc::UnboundedSender<HubMsg>>,
+    /// Engine events are copied here for the MPRIS player. `None` until
+    /// `run` starts it, and always `None` off Linux.
+    mpris: Option<mpsc::UnboundedSender<EngineEvent>>,
     /// Switches the settings menu flips while the app runs.
     live: Arc<LiveSettings>,
     /// The Discord presence worker. `None` until `run` starts it.
@@ -154,6 +157,7 @@ impl Ctx {
             playlist_rx: Some(playlist_rx),
             session: Arc::new(AtomicU64::new(0)),
             hub: None,
+            mpris: None,
             live: Arc::default(),
             presence: None,
             state_path: None,
@@ -296,6 +300,8 @@ where
     )
     .await;
     shutdown_engine(&mut ctx).await;
+    // Closing the feed lets MPRIS give up its bus name.
+    ctx.mpris = None;
     services.stop().await;
     result
 }
@@ -378,6 +384,9 @@ where
             ev = ctx.engine_events.recv(), if engine_open => if let Some(ev) = ev {
                 if let Some(hub) = &ctx.hub {
                     let _ = hub.send(HubMsg::Engine(ev.clone(), unix_ms()));
+                }
+                if let Some(mpris) = &ctx.mpris {
+                    let _ = mpris.send(ev.clone());
                 }
                 AppEvent::Engine(ev)
             } else {
@@ -1079,13 +1088,15 @@ fn unix_ms() -> i64 {
 }
 
 /// Background work stopped after the UI quits: the outbox retry timer, the
-/// queue saver, and Discord presence. The hub task ends on its own when
-/// `Ctx` drops its sender.
+/// queue saver, Discord presence, and MPRIS. The hub task ends on its own
+/// when `Ctx` drops its sender.
 struct Services {
     presence: Option<mpsc::UnboundedSender<PresenceMsg>>,
     flusher: JoinHandle<()>,
     saver_stop: oneshot::Sender<()>,
     saver: JoinHandle<()>,
+    /// Ends once `Ctx::mpris` is dropped and the bus name is released.
+    mpris: Option<JoinHandle<()>>,
 }
 
 impl Services {
@@ -1102,6 +1113,11 @@ impl Services {
         }
         if let Some(presence) = &self.presence {
             let _ = presence.send(PresenceMsg::Shutdown);
+        }
+        if let Some(mpris) = self.mpris
+            && tokio::time::timeout(SHUTDOWN_GRACE, mpris).await.is_err()
+        {
+            tracing::warn!("MPRIS did not stop in time");
         }
     }
 }
@@ -1167,7 +1183,58 @@ fn start_services(ctx: &mut Ctx) -> Services {
         flusher,
         saver_stop,
         saver,
+        mpris: start_mpris(ctx, cache.join("art")),
     }
+}
+
+/// Serves MPRIS from a task, so connecting to the bus never holds up the
+/// first frame. Events sent before it connects wait in the channel.
+#[cfg(target_os = "linux")]
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "matches the stub for platforms without MPRIS"
+)]
+fn start_mpris(ctx: &mut Ctx, covers: PathBuf) -> Option<JoinHandle<()>> {
+    use crate::integrations::mpris;
+
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    ctx.mpris = Some(tx);
+    let player = ctx.player.clone();
+    let client = ctx.client.clone();
+    let cover: mpris::CoverLookup =
+        Arc::new(move |id| cover_file(current_client(&client), covers.clone(), id));
+    Some(tokio::spawn(async move {
+        let Some(service) = mpris::spawn(mpris::session_bus(), player, cover).await else {
+            return;
+        };
+        while let Some(ev) = rx.recv().await {
+            let _ = service.events.send(ev);
+        }
+        service.stop().await;
+    }))
+}
+
+#[cfg(not(target_os = "linux"))]
+fn start_mpris(_ctx: &mut Ctx, _covers: PathBuf) -> Option<JoinHandle<()>> {
+    None
+}
+
+/// The cached cover file for `id`, fetched first if needed. `None` while
+/// logged out or when the server has none.
+fn cover_file(
+    client: Option<SubsonicClient>,
+    dir: PathBuf,
+    id: String,
+) -> BoxFuture<'static, Option<PathBuf>> {
+    Box::pin(async move {
+        match CoverCache::new(dir, client?).get(&id, COVER_SIZE).await {
+            Ok(path) => Some(path),
+            Err(e) => {
+                tracing::warn!("cover {id} unavailable: {e:#}");
+                None
+            }
+        }
+    })
 }
 
 /// Feeds engine events to the hub one at a time, in order. Slow lookups
@@ -1268,18 +1335,11 @@ impl HubPorts for LivePorts {
     }
 
     fn cover_path(&self, cover_id: &str) -> BoxFuture<'_, Option<PathBuf>> {
-        let client = current_client(&self.client);
-        let dir = self.covers.clone();
-        let id = cover_id.to_string();
-        Box::pin(async move {
-            match CoverCache::new(dir, client?).get(&id, COVER_SIZE).await {
-                Ok(path) => Some(path),
-                Err(e) => {
-                    tracing::warn!("cover {id} unavailable for the notification: {e:#}");
-                    None
-                }
-            }
-        })
+        cover_file(
+            current_client(&self.client),
+            self.covers.clone(),
+            cover_id.to_string(),
+        )
     }
 
     fn account(&self) -> String {
@@ -1949,6 +2009,37 @@ mod tests {
         )
         .await
         .expect("loop kept running")
+    }
+
+    #[tokio::test]
+    async fn engine_events_are_copied_to_mpris() {
+        let (player, _player_rx) = mpsc::unbounded_channel();
+        let (_snap_tx, snapshot) = watch::channel(PlayerSnapshot::default());
+        let (events_tx, engine_events) = mpsc::unbounded_channel();
+        let mut ctx = Ctx::new(SharedClient::default(), player, snapshot, engine_events);
+        let (mpris_tx, mut mpris_rx) = mpsc::unbounded_channel();
+        ctx.mpris = Some(mpris_tx);
+        events_tx.send(EngineEvent::Seeked(12.0)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();
+        let quit = async {
+            while mpris_rx.is_empty() {
+                tokio::task::yield_now().await;
+            }
+        };
+        tokio::time::timeout(
+            Duration::from_secs(1),
+            event_loop(
+                &mut terminal,
+                App::new(),
+                &mut ctx,
+                futures::stream::pending(),
+                quit,
+            ),
+        )
+        .await
+        .expect("the event reached MPRIS")
+        .unwrap();
+        assert_eq!(mpris_rx.try_recv().unwrap(), EngineEvent::Seeked(12.0));
     }
 
     #[test]
