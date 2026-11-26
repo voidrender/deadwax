@@ -35,18 +35,9 @@ pub fn commands(c: Control, state: &MprisState) -> Vec<PlayerCommand> {
         Control::Stop => Vec::new(),
         Control::Next => vec![PlayerCommand::Next],
         Control::Previous => vec![PlayerCommand::Prev],
-        Control::Seek(us) => {
-            // The spec says seeking past the end acts like Next.
-            let past_end = state
-                .metadata()
-                .length_us
-                .is_some_and(|len| state.position_us().saturating_add(us) > len);
-            if past_end {
-                vec![PlayerCommand::Next]
-            } else {
-                vec![PlayerCommand::SeekRelative(seconds(us))]
-            }
-        }
+        // The spec says seeking past the end acts like Next. The engine
+        // decides that, because `state` can lag behind its position.
+        Control::Seek(us) => vec![PlayerCommand::SeekRelativeOrNext(seconds(us))],
         Control::SetPosition {
             track_id,
             position_us,
@@ -141,37 +132,24 @@ mod tests {
         let s = playing();
         assert_eq!(commands(Control::Next, &s), [PlayerCommand::Next]);
         assert_eq!(commands(Control::Previous, &s), [PlayerCommand::Prev]);
-        assert_eq!(
-            commands(Control::Seek(-5_000_000), &s),
-            [PlayerCommand::SeekRelative(-5.0)]
-        );
-        assert!(commands(Control::Stop, &s).is_empty());
-    }
-
-    #[test]
-    fn seeking_past_the_end_goes_to_the_next_track() {
-        let mut s = playing();
-        s.apply(&EngineEvent::Position {
+        // The engine decides whether a seek passes the end, from its own
+        // position, so a stale position here can't cancel a skip.
+        let mut near_end = playing();
+        near_end.apply(&EngineEvent::Position {
             pos: 195.0,
             paused: false,
         });
-        assert_eq!(
-            commands(Control::Seek(10_000_000), &s),
-            [PlayerCommand::Next]
-        );
-        // Landing exactly on the end is still a seek.
-        assert_eq!(
-            commands(Control::Seek(5_000_000), &s),
-            [PlayerCommand::SeekRelative(5.0)]
-        );
-        // Without a known length there is no end to pass.
-        let song: Song =
-            serde_json::from_value(serde_json::json!({"id": "s2", "title": "T"})).unwrap();
-        s.apply(&EngineEvent::TrackStarted(Box::new(song)));
-        assert_eq!(
-            commands(Control::Seek(999_000_000), &s),
-            [PlayerCommand::SeekRelative(999.0)]
-        );
+        for state in [&s, &near_end] {
+            assert_eq!(
+                commands(Control::Seek(-5_000_000), state),
+                [PlayerCommand::SeekRelativeOrNext(-5.0)]
+            );
+            assert_eq!(
+                commands(Control::Seek(10_000_000), state),
+                [PlayerCommand::SeekRelativeOrNext(10.0)]
+            );
+        }
+        assert!(commands(Control::Stop, &s).is_empty());
     }
 
     #[test]

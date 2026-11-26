@@ -226,7 +226,7 @@ async fn play_pause_reaches_the_engine() {
         got,
         [
             PlayerCommand::TogglePause,
-            PlayerCommand::SeekRelative(-5.0),
+            PlayerCommand::SeekRelativeOrNext(-5.0),
             PlayerCommand::SeekTo(30.0),
         ]
     );

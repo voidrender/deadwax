@@ -31,6 +31,10 @@ pub enum PlayerCommand {
     Next,
     Prev,
     SeekRelative(f64),
+    /// Like `SeekRelative`, but a target past the end of the track goes to
+    /// the next track instead, as MPRIS asks. The engine decides from its
+    /// own position, so quick seeks in a row add up.
+    SeekRelativeOrNext(f64),
     SeekTo(f64),
     /// Moves the volume by this many points, clamped to 0..=100. It is
     /// relative so that quick presses add up even before a snapshot shows
