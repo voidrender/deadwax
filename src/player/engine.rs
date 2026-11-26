@@ -165,25 +165,22 @@ impl<B: AudioBackend> Engine<B> {
                 self.queue.insert_next(songs);
                 self.sync_next().await;
             }
-            PlayerCommand::TogglePause => self.toggle_pause(&mut ev).await,
-            PlayerCommand::Next => {
-                let has_next = self.queue.pos.is_some_and(|p| {
-                    p + 1 < self.queue.order.len() || self.queue.repeat == RepeatMode::All
-                });
-                if has_next {
-                    self.queue.next();
-                    self.play_current(None, self.status == Status::Paused, &mut ev)
-                        .await;
-                }
+            PlayerCommand::TogglePause => {
+                let paused = self.status == Status::Playing;
+                self.set_paused(paused, &mut ev).await;
             }
+            PlayerCommand::SetPaused(paused) => self.set_paused(paused, &mut ev).await,
+            PlayerCommand::Next => self.next(&mut ev).await,
             PlayerCommand::Prev => self.prev(&mut ev).await,
-            PlayerCommand::SeekRelative(delta) => {
-                if self.loaded_current.is_some() {
-                    let mut target = (self.position + delta).max(0.0);
-                    if self.duration > 0.0 {
-                        target = target.min(self.duration);
-                    }
-                    self.seek(target, &mut ev).await;
+            PlayerCommand::SeekRelative(delta) => self.seek_relative(delta, &mut ev).await,
+            PlayerCommand::SeekRelativeOrNext(delta) => {
+                if self.loaded_current.is_some()
+                    && self.duration > 0.0
+                    && self.position + delta > self.duration
+                {
+                    self.next(&mut ev).await;
+                } else {
+                    self.seek_relative(delta, &mut ev).await;
                 }
             }
             PlayerCommand::SeekTo(secs) => self.seek(secs.max(0.0), &mut ev).await,
@@ -468,16 +465,20 @@ impl<B: AudioBackend> Engine<B> {
         }
     }
 
-    async fn toggle_pause(&mut self, ev: &mut Vec<EngineEvent>) {
+    /// Pauses or resumes, doing nothing when already in that state.
+    /// Resuming a stopped queue starts it.
+    async fn set_paused(&mut self, paused: bool, ev: &mut Vec<EngineEvent>) {
         match self.status {
             Status::Stopped => {
-                if self.queue.current().is_none() && self.queue.jump_to(0).is_none() {
+                if paused || (self.queue.current().is_none() && self.queue.jump_to(0).is_none()) {
                     return;
                 }
                 self.play_current(None, false, ev).await;
             }
             Status::Playing | Status::Paused => {
-                let paused = self.status == Status::Playing;
+                if paused == (self.status == Status::Paused) {
+                    return;
+                }
                 match self.backend.set_pause(paused).await {
                     Ok(()) => {
                         self.pause_set(paused);
@@ -491,6 +492,29 @@ impl<B: AudioBackend> Engine<B> {
                     Err(e) => tracing::warn!("set pause failed: {e:#}"),
                 }
             }
+        }
+    }
+
+    /// Moves to the next track, if there is one.
+    async fn next(&mut self, ev: &mut Vec<EngineEvent>) {
+        let has_next = self.queue.pos.is_some_and(|p| {
+            p + 1 < self.queue.order.len() || self.queue.repeat == RepeatMode::All
+        });
+        if has_next {
+            self.queue.next();
+            self.play_current(None, self.status == Status::Paused, ev)
+                .await;
+        }
+    }
+
+    /// Seeks by `delta` seconds, clamped to the track.
+    async fn seek_relative(&mut self, delta: f64, ev: &mut Vec<EngineEvent>) {
+        if self.loaded_current.is_some() {
+            let mut target = (self.position + delta).max(0.0);
+            if self.duration > 0.0 {
+                target = target.min(self.duration);
+            }
+            self.seek(target, ev).await;
         }
     }
 
@@ -1272,6 +1296,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn set_paused_changes_only_a_differing_state() {
+        let mut e = playing(3).await;
+        assert!(
+            e.handle_command(PlayerCommand::SetPaused(false))
+                .await
+                .is_empty()
+        );
+        assert!(e.backend.calls.is_empty());
+        // A second pause sent before the first is reported stays paused.
+        let first = e.handle_command(PlayerCommand::SetPaused(true)).await;
+        let second = e.handle_command(PlayerCommand::SetPaused(true)).await;
+        assert_eq!(first, [EngineEvent::PauseChanged(true)]);
+        assert!(second.is_empty());
+        assert_eq!(e.backend.calls, [Call::Pause(true)]);
+        assert_eq!(e.snapshot().status, Status::Paused);
+        let ev = e.handle_command(PlayerCommand::SetPaused(false)).await;
+        assert_eq!(ev, [EngineEvent::PauseChanged(false)]);
+        assert_eq!(e.snapshot().status, Status::Playing);
+    }
+
+    #[tokio::test]
     async fn own_pause_echoes_are_ignored() {
         let mut e = playing(3).await;
         e.handle_command(PlayerCommand::TogglePause).await;
@@ -1344,6 +1389,34 @@ mod tests {
         assert_eq!(e.backend.calls, [Call::Seek(30.0)]);
         e.handle_backend(BackendEvent::PlaybackRestart).await;
         assert_eq!(e.backend.calls.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn seek_relative_or_next_skips_only_past_the_end() {
+        let mut e = playing(3).await;
+        e.handle_backend(BackendEvent::Duration(200.0)).await;
+        e.handle_backend(BackendEvent::Position(195.0)).await;
+        // Two quick seeks before mpv reports a position: the first lands at
+        // 198, so the second would pass the end.
+        e.handle_command(PlayerCommand::SeekRelativeOrNext(3.0))
+            .await;
+        assert_eq!(e.backend.calls, [Call::Seek(198.0)]);
+        e.backend.calls.clear();
+        e.handle_command(PlayerCommand::SeekRelativeOrNext(3.0))
+            .await;
+        assert_eq!(e.backend.calls, [load("u:1", PLAY), append("u:2")]);
+    }
+
+    #[tokio::test]
+    async fn seek_relative_or_next_reaches_the_end_and_clamps_at_zero() {
+        let mut e = playing(2).await;
+        e.handle_backend(BackendEvent::Duration(100.0)).await;
+        e.handle_backend(BackendEvent::Position(95.0)).await;
+        e.handle_command(PlayerCommand::SeekRelativeOrNext(5.0))
+            .await;
+        e.handle_command(PlayerCommand::SeekRelativeOrNext(-500.0))
+            .await;
+        assert_eq!(e.backend.calls, [Call::Seek(100.0), Call::Seek(0.0)]);
     }
 
     #[tokio::test]

@@ -40,6 +40,7 @@ wiremock = "0.6.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 notify-rust = "4.19.0"
+zbus = { version = "6.2.1", default-features = false, features = ["tokio", "service", "proxy"] }
 
 [lints.rust]
 unsafe_code = "forbid"
