@@ -2011,7 +2011,8 @@ mod tests {
         .expect("loop kept running")
     }
 
-    #[tokio::test]
+    /// Runs the loop until an engine event reaches MPRIS. Only
+    /// `loop_stops_on_a_panic_or_signal_and_feeds_mpris` calls it.
     async fn engine_events_are_copied_to_mpris() {
         let (player, _player_rx) = mpsc::unbounded_channel();
         let (_snap_tx, snapshot) = watch::channel(PlayerSnapshot::default());
@@ -2317,10 +2318,10 @@ mod tests {
         assert_eq!(Outbox::open(outbox_path).unwrap().len(), 1);
     }
 
-    /// One test covers every case because the panic flag is process-wide,
-    /// and a loop running in another test would see it.
+    /// One test covers every case that runs the loop, because the panic
+    /// flag is process-wide and a loop running in another test would see it.
     #[tokio::test]
-    async fn loop_stops_after_a_panic_elsewhere_or_a_stop_signal() {
+    async fn loop_stops_on_a_panic_or_signal_and_feeds_mpris() {
         note_panic();
         let before_start = run_loop_briefly().await;
         clear_panic();
@@ -2340,6 +2341,8 @@ mod tests {
 
         // A stop signal ends the loop cleanly so `run` can shut mpv down.
         run_loop_until(async {}).await.unwrap();
+
+        engine_events_are_copied_to_mpris().await;
     }
 
     #[tokio::test]
