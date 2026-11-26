@@ -35,7 +35,18 @@ pub fn commands(c: Control, state: &MprisState) -> Vec<PlayerCommand> {
         Control::Stop => Vec::new(),
         Control::Next => vec![PlayerCommand::Next],
         Control::Previous => vec![PlayerCommand::Prev],
-        Control::Seek(us) => vec![PlayerCommand::SeekRelative(seconds(us))],
+        Control::Seek(us) => {
+            // The spec says seeking past the end acts like Next.
+            let past_end = state
+                .metadata()
+                .length_us
+                .is_some_and(|len| state.position_us().saturating_add(us) > len);
+            if past_end {
+                vec![PlayerCommand::Next]
+            } else {
+                vec![PlayerCommand::SeekRelative(seconds(us))]
+            }
+        }
         Control::SetPosition {
             track_id,
             position_us,
@@ -135,6 +146,32 @@ mod tests {
             [PlayerCommand::SeekRelative(-5.0)]
         );
         assert!(commands(Control::Stop, &s).is_empty());
+    }
+
+    #[test]
+    fn seeking_past_the_end_goes_to_the_next_track() {
+        let mut s = playing();
+        s.apply(&EngineEvent::Position {
+            pos: 195.0,
+            paused: false,
+        });
+        assert_eq!(
+            commands(Control::Seek(10_000_000), &s),
+            [PlayerCommand::Next]
+        );
+        // Landing exactly on the end is still a seek.
+        assert_eq!(
+            commands(Control::Seek(5_000_000), &s),
+            [PlayerCommand::SeekRelative(5.0)]
+        );
+        // Without a known length there is no end to pass.
+        let song: Song =
+            serde_json::from_value(serde_json::json!({"id": "s2", "title": "T"})).unwrap();
+        s.apply(&EngineEvent::TrackStarted(Box::new(song)));
+        assert_eq!(
+            commands(Control::Seek(999_000_000), &s),
+            [PlayerCommand::SeekRelative(999.0)]
+        );
     }
 
     #[test]
